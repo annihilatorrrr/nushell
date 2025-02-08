@@ -1,10 +1,5 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
-    Type, Value,
-};
+use nu_engine::command_prelude::*;
+
 use std::{
     thread,
     time::{Duration, Instant},
@@ -20,7 +15,7 @@ impl Command for Sleep {
         "sleep"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Delay for a specified amount of time."
     }
 
@@ -52,20 +47,16 @@ impl Command for Sleep {
 
         let total_dur =
             duration_from_i64(duration) + rest.into_iter().map(duration_from_i64).sum::<Duration>();
+        let deadline = Instant::now() + total_dur;
 
-        let ctrlc_ref = &engine_state.ctrlc.clone();
-        let start = Instant::now();
         loop {
-            thread::sleep(CTRL_C_CHECK_INTERVAL);
-            if start.elapsed() >= total_dur {
+            // sleep for 100ms, or until the deadline
+            let time_until_deadline = deadline.saturating_duration_since(Instant::now());
+            if time_until_deadline.is_zero() {
                 break;
             }
-
-            if nu_utils::ctrl_c::was_pressed(ctrlc_ref) {
-                return Err(ShellError::InterruptedByUser {
-                    span: Some(call.head),
-                });
-            }
+            thread::sleep(CTRL_C_CHECK_INTERVAL.min(time_until_deadline));
+            engine_state.signals().check(call.head)?;
         }
 
         Ok(Value::nothing(call.head).into_pipeline_data())
@@ -79,8 +70,8 @@ impl Command for Sleep {
                 result: Some(Value::nothing(Span::test_data())),
             },
             Example {
-                description: "Sleep for 3sec",
-                example: "sleep 1sec 1sec 1sec",
+                description: "Use multiple arguments to write a duration with multiple units, which is unsupported by duration literals",
+                example: "sleep 1min 30sec",
                 result: None,
             },
             Example {

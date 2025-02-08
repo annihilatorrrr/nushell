@@ -28,7 +28,19 @@ fn adds_row_data_if_column_missing() {
 
 #[test]
 fn default_after_empty_filter() {
-    let actual = nu!("[a b] | where $it == 'c' | last | default 'd'");
+    let actual = nu!("[a b] | where $it == 'c' | get -i 0 | default 'd'");
 
     assert_eq!(actual.out, "d");
+}
+
+#[test]
+fn keeps_nulls_in_lists() {
+    let actual = nu!(r#"[null, 2, 3] | default [] | to json -r"#);
+    assert_eq!(actual.out, "[null,2,3]");
+}
+
+#[test]
+fn replaces_null() {
+    let actual = nu!(r#"null | default 1"#);
+    assert_eq!(actual.out, "1");
 }

@@ -1,14 +1,7 @@
-use std::path::Path;
-
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
-use nu_protocol::{
-    engine::Command, Category, Example, PipelineData, ShellError, Signature, Span, Spanned,
-    SyntaxShape, Type, Value,
-};
-
 use super::PathSubcommandArguments;
+use nu_engine::command_prelude::*;
+use nu_protocol::engine::StateWorkingSet;
+use std::path::Path;
 
 struct Arguments {
     replace: Option<Spanned<String>>,
@@ -49,7 +42,7 @@ impl Command for SubCommand {
             .category(Category::Path)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Get the parent directory of a path."
     }
 
@@ -76,7 +69,7 @@ impl Command for SubCommand {
         }
         input.map(
             move |value| super::operate(&get_dirname, &args, value, head),
-            engine_state.ctrlc.clone(),
+            engine_state.signals(),
         )
     }
 
@@ -98,7 +91,7 @@ impl Command for SubCommand {
         }
         input.map(
             move |value| super::operate(&get_dirname, &args, value, head),
-            working_set.permanent().ctrlc.clone(),
+            working_set.permanent().signals(),
         )
     }
 

@@ -1,13 +1,5 @@
-use nu_engine::env::current_dir;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoInterruptiblePipelineData, PipelineData, ShellError, Signature, Span,
-    Spanned, SyntaxShape, Type, Value,
-};
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use nu_engine::command_prelude::*;
+use nu_protocol::{ListStream, Signals};
 use wax::{Glob as WaxGlob, WalkBehavior, WalkEntry};
 
 #[derive(Clone)]
@@ -21,7 +13,7 @@ impl Command for Glob {
     fn signature(&self) -> Signature {
         Signature::build("glob")
             .input_output_types(vec![(Type::Nothing, Type::List(Box::new(Type::String)))])
-            .required("glob", SyntaxShape::String, "The glob expression.")
+            .required("glob", SyntaxShape::OneOf(vec![SyntaxShape::String, SyntaxShape::GlobPattern]), "The glob expression.")
             .named(
                 "depth",
                 SyntaxShape::Int,
@@ -52,7 +44,7 @@ impl Command for Glob {
             .category(Category::FileSystem)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Creates a list of files and/or folders based on the glob pattern provided."
     }
 
@@ -122,7 +114,7 @@ impl Command for Glob {
         ]
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"For more glob pattern help, please refer to https://docs.rs/crate/wax/latest"#
     }
 
@@ -133,14 +125,13 @@ impl Command for Glob {
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let ctrlc = engine_state.ctrlc.clone();
         let span = call.head;
-        let glob_pattern: Spanned<String> = call.req(engine_state, stack, 0)?;
+        let glob_pattern_input: Value = call.req(engine_state, stack, 0)?;
+        let glob_span = glob_pattern_input.span();
         let depth = call.get_flag(engine_state, stack, "depth")?;
         let no_dirs = call.has_flag(engine_state, stack, "no-dir")?;
         let no_files = call.has_flag(engine_state, stack, "no-file")?;
         let no_symlinks = call.has_flag(engine_state, stack, "no-symlink")?;
-
         let paths_to_exclude: Option<Value> = call.get_flag(engine_state, stack, "exclude")?;
 
         let (not_patterns, not_pattern_span): (Vec<String>, Span) = match paths_to_exclude {
@@ -157,36 +148,53 @@ impl Command for Glob {
             }
         };
 
-        if glob_pattern.item.is_empty() {
+        let glob_pattern =
+            match glob_pattern_input {
+                Value::String { val, .. } | Value::Glob { val, .. } => val,
+                _ => return Err(ShellError::IncorrectValue {
+                    msg: "Incorrect glob pattern supplied to glob. Please use string or glob only."
+                        .to_string(),
+                    val_span: call.head,
+                    call_span: glob_span,
+                }),
+            };
+
+        if glob_pattern.is_empty() {
             return Err(ShellError::GenericError {
                 error: "glob pattern must not be empty".into(),
                 msg: "glob pattern is empty".into(),
-                span: Some(glob_pattern.span),
+                span: Some(glob_span),
                 help: Some("add characters to the glob pattern".into()),
                 inner: vec![],
             });
         }
 
+        // below we have to check / instead of MAIN_SEPARATOR because glob uses / as separator
+        // using a glob like **\*.rs should fail because it's not a valid glob pattern
         let folder_depth = if let Some(depth) = depth {
             depth
-        } else {
+        } else if glob_pattern.contains("**") {
             usize::MAX
+        } else if glob_pattern.contains('/') {
+            glob_pattern.split('/').count() + 1
+        } else {
+            1
         };
 
-        let (prefix, glob) = match WaxGlob::new(&glob_pattern.item) {
+        let (prefix, glob) = match WaxGlob::new(&glob_pattern) {
             Ok(p) => p.partition(),
             Err(e) => {
                 return Err(ShellError::GenericError {
                     error: "error with glob pattern".into(),
                     msg: format!("{e}"),
-                    span: Some(glob_pattern.span),
+                    span: Some(glob_span),
                     help: None,
                     inner: vec![],
                 })
             }
         };
 
-        let path = current_dir(engine_state, stack)?;
+        let path = engine_state.cwd_as_string(Some(stack))?;
         let path = match nu_path::canonicalize_with(prefix, path) {
             Ok(path) => path,
             Err(e) if e.to_string().contains("os error 2") =>
@@ -198,14 +206,14 @@ impl Command for Glob {
                 return Err(ShellError::GenericError {
                     error: "error in canonicalize".into(),
                     msg: format!("{e}"),
-                    span: Some(glob_pattern.span),
+                    span: Some(glob_span),
                     help: None,
                     inner: vec![],
                 })
             }
         };
 
-        Ok(if !not_patterns.is_empty() {
+        let result = if !not_patterns.is_empty() {
             let np: Vec<&str> = not_patterns.iter().map(|s| s as &str).collect();
             let glob_results = glob
                 .walk_with_behavior(
@@ -215,6 +223,7 @@ impl Command for Glob {
                         ..Default::default()
                     },
                 )
+                .into_owned()
                 .not(np)
                 .map_err(|err| ShellError::GenericError {
                     error: "error with glob's not pattern".into(),
@@ -224,10 +233,14 @@ impl Command for Glob {
                     inner: vec![],
                 })?
                 .flatten();
-            let result = glob_to_value(ctrlc, glob_results, no_dirs, no_files, no_symlinks, span)?;
-            result
-                .into_iter()
-                .into_pipeline_data(engine_state.ctrlc.clone())
+            glob_to_value(
+                engine_state.signals(),
+                glob_results,
+                no_dirs,
+                no_files,
+                no_symlinks,
+                span,
+            )
         } else {
             let glob_results = glob
                 .walk_with_behavior(
@@ -237,12 +250,19 @@ impl Command for Glob {
                         ..Default::default()
                     },
                 )
+                .into_owned()
                 .flatten();
-            let result = glob_to_value(ctrlc, glob_results, no_dirs, no_files, no_symlinks, span)?;
-            result
-                .into_iter()
-                .into_pipeline_data(engine_state.ctrlc.clone())
-        })
+            glob_to_value(
+                engine_state.signals(),
+                glob_results,
+                no_dirs,
+                no_files,
+                no_symlinks,
+                span,
+            )
+        };
+
+        Ok(result.into_pipeline_data(span, engine_state.signals().clone()))
     }
 }
 
@@ -261,32 +281,33 @@ fn convert_patterns(columns: &[Value]) -> Result<Vec<String>, ShellError> {
     Ok(res)
 }
 
-fn glob_to_value<'a>(
-    ctrlc: Option<Arc<AtomicBool>>,
-    glob_results: impl Iterator<Item = WalkEntry<'a>>,
+fn glob_to_value(
+    signals: &Signals,
+    glob_results: impl Iterator<Item = WalkEntry<'static>> + Send + 'static,
     no_dirs: bool,
     no_files: bool,
     no_symlinks: bool,
     span: Span,
-) -> Result<Vec<Value>, ShellError> {
-    let mut result: Vec<Value> = Vec::new();
-    for entry in glob_results {
-        if nu_utils::ctrl_c::was_pressed(&ctrlc) {
-            result.clear();
-            return Err(ShellError::InterruptedByUser { span: None });
-        }
+) -> ListStream {
+    let map_signals = signals.clone();
+    let result = glob_results.filter_map(move |entry| {
+        if let Err(err) = map_signals.check(span) {
+            return Some(Value::error(err, span));
+        };
         let file_type = entry.file_type();
 
         if !(no_dirs && file_type.is_dir()
             || no_files && file_type.is_file()
             || no_symlinks && file_type.is_symlink())
         {
-            result.push(Value::string(
+            Some(Value::string(
                 entry.into_path().to_string_lossy().to_string(),
                 span,
-            ));
+            ))
+        } else {
+            None
         }
-    }
+    });
 
-    Ok(result)
+    ListStream::new(result, span, signals.clone())
 }

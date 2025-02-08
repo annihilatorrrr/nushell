@@ -1,11 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::IntoPipelineData;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    record, Category, Example, PipelineData, Record, ShellError, Signature, SyntaxShape, Type,
-    Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Rotate;
@@ -18,8 +11,10 @@ impl Command for Rotate {
     fn signature(&self) -> Signature {
         Signature::build("rotate")
             .input_output_types(vec![
-                (Type::Record(vec![]), Type::Table(vec![])),
-                (Type::Table(vec![]), Type::Table(vec![])),
+                (Type::record(), Type::table()),
+                (Type::table(), Type::table()),
+                (Type::list(Type::Any), Type::table()),
+                (Type::String, Type::table()),
             ])
             .switch("ccw", "rotate counter clockwise", None)
             .rest(
@@ -28,9 +23,10 @@ impl Command for Rotate {
                 "the names to give columns once rotated",
             )
             .category(Category::Filters)
+            .allow_variants_without_examples(true)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Rotates a table or record clockwise (default) or counter-clockwise (use --ccw flag)."
     }
 
@@ -161,7 +157,7 @@ pub fn rotate(
 ) -> Result<PipelineData, ShellError> {
     let metadata = input.metadata();
     let col_given_names: Vec<String> = call.rest(engine_state, stack, 0)?;
-    let span = input.span();
+    let input_span = input.span().unwrap_or(call.head);
     let mut values = input.into_iter().collect::<Vec<_>>();
     let mut old_column_names = vec![];
     let mut new_values = vec![];
@@ -178,7 +174,7 @@ pub fn rotate(
             let span = val.span();
             match val {
                 Value::Record { val: record, .. } => {
-                    let (cols, vals): (Vec<_>, Vec<_>) = record.into_iter().unzip();
+                    let (cols, vals): (Vec<_>, Vec<_>) = record.into_owned().into_iter().unzip();
                     old_column_names = cols;
                     new_values.extend_from_slice(&vals);
                 }
@@ -203,7 +199,7 @@ pub fn rotate(
             msg: "list input is empty".to_string(),
             input: "value originates from here".into(),
             msg_span: call.head,
-            input_span: span.unwrap_or(call.head),
+            input_span,
         });
     }
 
@@ -234,15 +230,14 @@ pub fn rotate(
     }
 
     if not_a_record {
-        return Ok(Value::list(
-            vec![Value::record(
-                Record::from_raw_cols_vals(new_column_names, new_values),
-                call.head,
-            )],
-            call.head,
-        )
-        .into_pipeline_data()
-        .set_metadata(metadata));
+        let record =
+            Record::from_raw_cols_vals(new_column_names, new_values, input_span, call.head)?;
+
+        return Ok(
+            Value::list(vec![Value::record(record, call.head)], call.head)
+                .into_pipeline_data()
+                .set_metadata(metadata),
+        );
     }
 
     // holder for the new records
@@ -281,10 +276,11 @@ pub fn rotate(
             }
             res.to_vec()
         };
-        final_values.push(Value::record(
-            Record::from_raw_cols_vals(new_column_names.clone(), new_vals),
-            call.head,
-        ))
+
+        let record =
+            Record::from_raw_cols_vals(new_column_names.clone(), new_vals, input_span, call.head)?;
+
+        final_values.push(Value::record(record, call.head))
     }
 
     Ok(Value::list(final_values, call.head)

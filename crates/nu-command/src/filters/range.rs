@@ -1,11 +1,5 @@
-use nu_engine::CallExt;
-
-use nu_protocol::ast::{Call, RangeInclusion};
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoInterruptiblePipelineData, PipelineData, ShellError, Signature, Span,
-    SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::{report_parse_warning, ParseWarning};
 
 #[derive(Clone)]
 pub struct Range;
@@ -22,15 +16,15 @@ impl Command for Range {
                 Type::List(Box::new(Type::Any)),
             )])
             .required("rows", SyntaxShape::Range, "Range of rows to return.")
-            .category(Category::Filters)
+            .category(Category::Deprecated)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Return only the selected rows."
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["filter", "head", "tail"]
+        vec!["filter", "head", "tail", "slice"]
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -69,60 +63,17 @@ impl Command for Range {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let metadata = input.metadata();
-        let rows: nu_protocol::Range = call.req(engine_state, stack, 0)?;
-
-        let rows_from = get_range_val(rows.from);
-        let rows_to = if rows.inclusion == RangeInclusion::RightExclusive {
-            get_range_val(rows.to) - 1
-        } else {
-            get_range_val(rows.to)
-        };
-
-        // only collect the input if we have any negative indices
-        if rows_from < 0 || rows_to < 0 {
-            let v: Vec<_> = input.into_iter().collect();
-            let vlen: i64 = v.len() as i64;
-
-            let from = if rows_from < 0 {
-                (vlen + rows_from) as usize
-            } else {
-                rows_from as usize
-            };
-
-            let to = if rows_to < 0 {
-                (vlen + rows_to) as usize
-            } else if rows_to > v.len() as i64 {
-                v.len()
-            } else {
-                rows_to as usize
-            };
-
-            if from > to {
-                Ok(PipelineData::Value(Value::nothing(call.head), None))
-            } else {
-                let iter = v.into_iter().skip(from).take(to - from + 1);
-                Ok(iter.into_pipeline_data(engine_state.ctrlc.clone()))
-            }
-        } else {
-            let from = rows_from as usize;
-            let to = rows_to as usize;
-
-            if from > to {
-                Ok(PipelineData::Value(Value::nothing(call.head), None))
-            } else {
-                let iter = input.into_iter().skip(from).take(to - from + 1);
-                Ok(iter.into_pipeline_data(engine_state.ctrlc.clone()))
-            }
-        }
-        .map(|x| x.set_metadata(metadata))
-    }
-}
-
-fn get_range_val(rows_val: Value) -> i64 {
-    match rows_val {
-        Value::Int { val: x, .. } => x,
-        _ => 0,
+        let head = call.head;
+        report_parse_warning(
+            &StateWorkingSet::new(engine_state),
+            &ParseWarning::DeprecatedWarning {
+                old_command: "range".into(),
+                new_suggestion: "use `slice`".into(),
+                span: head,
+                url: "`help slice`".into(),
+            },
+        );
+        super::Slice::run(&super::Slice, engine_state, stack, call, input)
     }
 }
 

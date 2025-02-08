@@ -3,10 +3,9 @@ use nu_test_support::playground::Playground;
 use nu_test_support::{nu, nu_repl_code, pipeline};
 use pretty_assertions::assert_eq;
 
-#[cfg(feature = "which-support")]
 mod environment;
-
 mod pipeline;
+mod repl;
 
 //FIXME: jt: we need to focus some fixes on wix as the plugins will differ
 #[ignore]
@@ -64,7 +63,7 @@ fn nu_lib_dirs_repl() {
     Playground::setup("nu_lib_dirs_repl", |dirs, sandbox| {
         sandbox
             .mkdir("scripts")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "scripts/foo.nu",
                 r#"
                     $env.FOO = "foo"
@@ -89,13 +88,13 @@ fn nu_lib_dirs_script() {
     Playground::setup("nu_lib_dirs_script", |dirs, sandbox| {
         sandbox
             .mkdir("scripts")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "scripts/foo.nu",
                 r#"
                     $env.FOO = "foo"
                 "#,
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     source-env foo.nu
@@ -120,7 +119,7 @@ fn nu_lib_dirs_relative_repl() {
     Playground::setup("nu_lib_dirs_relative_repl", |dirs, sandbox| {
         sandbox
             .mkdir("scripts")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "scripts/foo.nu",
                 r#"
                     $env.FOO = "foo"
@@ -146,13 +145,13 @@ fn const_nu_lib_dirs_relative() {
     Playground::setup("const_nu_lib_dirs_relative", |dirs, sandbox| {
         sandbox
             .mkdir("scripts")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "scripts/foo.nu",
                 r#"
                     $env.FOO = "foo"
                 "#,
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     const NU_LIB_DIRS = [ 'scripts' ]
@@ -173,13 +172,13 @@ fn nu_lib_dirs_relative_script() {
     Playground::setup("nu_lib_dirs_relative_script", |dirs, sandbox| {
         sandbox
             .mkdir("scripts")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "scripts/main.nu",
                 "
                     source-env ../foo.nu
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "foo.nu",
                 r#"
                     $env.FOO = "foo"
@@ -229,62 +228,57 @@ fn run_export_extern() {
 }
 
 #[test]
-#[cfg(not(windows))]
 fn run_in_login_mode() {
-    let child_output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "{:?} --no-config-file --login --commands 'echo $nu.is-login'",
-            nu_test_support::fs::executable_path()
-        ))
+    let child_output = std::process::Command::new(nu_test_support::fs::executable_path())
+        .args(["-n", "-l", "-c", "echo $nu.is-login"])
         .output()
-        .expect("true");
+        .expect("failed to run nu");
 
+    assert_eq!("true\n", String::from_utf8_lossy(&child_output.stdout));
     assert!(child_output.stderr.is_empty());
 }
 
 #[test]
-#[cfg(not(windows))]
 fn run_in_not_login_mode() {
-    let child_output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "{:?} -c 'echo $nu.is-login'",
-            nu_test_support::fs::executable_path()
-        ))
+    let child_output = std::process::Command::new(nu_test_support::fs::executable_path())
+        .args(["-n", "-c", "echo $nu.is-login"])
         .output()
-        .expect("false");
+        .expect("failed to run nu");
 
+    assert_eq!("false\n", String::from_utf8_lossy(&child_output.stdout));
     assert!(child_output.stderr.is_empty());
 }
 
 #[test]
-#[cfg(not(windows))]
 fn run_in_interactive_mode() {
-    let child_output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "{:?} -i -c 'echo $nu.is-interactive'",
-            nu_test_support::fs::executable_path()
-        ))
+    let child_output = std::process::Command::new(nu_test_support::fs::executable_path())
+        .args(["-n", "-i", "-c", "echo $nu.is-interactive"])
         .output()
-        .expect("true");
+        .expect("failed to run nu");
 
+    assert_eq!("true\n", String::from_utf8_lossy(&child_output.stdout));
     assert!(child_output.stderr.is_empty());
 }
 
 #[test]
-#[cfg(not(windows))]
 fn run_in_noninteractive_mode() {
-    let child_output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "{:?} -c 'echo $nu.is-interactive'",
-            nu_test_support::fs::executable_path()
-        ))
+    let child_output = std::process::Command::new(nu_test_support::fs::executable_path())
+        .args(["-n", "-c", "echo $nu.is-interactive"])
         .output()
-        .expect("false");
+        .expect("failed to run nu");
 
+    assert_eq!("false\n", String::from_utf8_lossy(&child_output.stdout));
+    assert!(child_output.stderr.is_empty());
+}
+
+#[test]
+fn run_with_no_newline() {
+    let child_output = std::process::Command::new(nu_test_support::fs::executable_path())
+        .args(["-n", "--no-newline", "-c", "\"hello world\""])
+        .output()
+        .expect("failed to run nu");
+
+    assert_eq!("hello world", String::from_utf8_lossy(&child_output.stdout)); // with no newline
     assert!(child_output.stderr.is_empty());
 }
 
@@ -292,12 +286,12 @@ fn run_in_noninteractive_mode() {
 fn main_script_can_have_subcommands1() {
     Playground::setup("main_subcommands", |dirs, sandbox| {
         sandbox.mkdir("main_subcommands");
-        sandbox.with_files(vec![FileWithContent(
+        sandbox.with_files(&[FileWithContent(
             "script.nu",
             r#"def "main foo" [x: int] {
                     print ($x + 100)
                   }
-                  
+
                   def "main" [] {
                     print "usage: script.nu <command name>"
                   }"#,
@@ -313,12 +307,12 @@ fn main_script_can_have_subcommands1() {
 fn main_script_can_have_subcommands2() {
     Playground::setup("main_subcommands", |dirs, sandbox| {
         sandbox.mkdir("main_subcommands");
-        sandbox.with_files(vec![FileWithContent(
+        sandbox.with_files(&[FileWithContent(
             "script.nu",
             r#"def "main foo" [x: int] {
                     print ($x + 100)
                   }
-                  
+
                   def "main" [] {
                     print "usage: script.nu <command name>"
                   }"#,
@@ -327,5 +321,127 @@ fn main_script_can_have_subcommands2() {
         let actual = nu!(cwd: dirs.test(), pipeline("nu script.nu"));
 
         assert!(actual.out.contains("usage: script.nu"));
+    })
+}
+
+#[test]
+fn source_empty_file() {
+    Playground::setup("source_empty_file", |dirs, sandbox| {
+        sandbox.mkdir("source_empty_file");
+        sandbox.with_files(&[FileWithContent("empty.nu", "")]);
+
+        let actual = nu!(cwd: dirs.test(), pipeline("nu empty.nu"));
+        assert!(actual.out.is_empty());
+    })
+}
+
+#[test]
+fn source_use_null() {
+    let actual = nu!(r#"source null"#);
+    assert!(actual.out.is_empty());
+    assert!(actual.err.is_empty());
+
+    let actual = nu!(r#"source-env null"#);
+    assert!(actual.out.is_empty());
+    assert!(actual.err.is_empty());
+
+    let actual = nu!(r#"use null"#);
+    assert!(actual.out.is_empty());
+    assert!(actual.err.is_empty());
+
+    let actual = nu!(r#"overlay use null"#);
+    assert!(actual.out.is_empty());
+    assert!(actual.err.is_empty());
+}
+
+#[test]
+fn source_use_file_named_null() {
+    Playground::setup("source_file_named_null", |dirs, sandbox| {
+        sandbox.with_files(&[FileWithContent(
+            "null",
+            r#"export-env { print "hello world" }"#,
+        )]);
+
+        let actual = nu!(cwd: dirs.test(), r#"source "null""#);
+        assert!(actual.out.contains("hello world"));
+        assert!(actual.err.is_empty());
+
+        let actual = nu!(cwd: dirs.test(), r#"source-env "null""#);
+        assert!(actual.out.contains("hello world"));
+        assert!(actual.err.is_empty());
+
+        let actual = nu!(cwd: dirs.test(), r#"use "null""#);
+        assert!(actual.out.contains("hello world"));
+        assert!(actual.err.is_empty());
+
+        let actual = nu!(cwd: dirs.test(), r#"overlay use "null""#);
+        assert!(actual.out.contains("hello world"));
+        assert!(actual.err.is_empty());
+    })
+}
+
+#[test]
+fn main_script_help_uses_script_name1() {
+    // Note: this test is somewhat fragile and might need to be adapted if the usage help message changes
+    Playground::setup("main_filename", |dirs, sandbox| {
+        sandbox.mkdir("main_filename");
+        sandbox.with_files(&[FileWithContent(
+            "script.nu",
+            r#"def main [] {}
+            "#,
+        )]);
+        let actual = nu!(cwd: dirs.test(), pipeline("nu script.nu --help"));
+        assert!(actual.out.contains("> script.nu"));
+        assert!(!actual.out.contains("> main"));
+    })
+}
+
+#[test]
+fn main_script_help_uses_script_name2() {
+    // Note: this test is somewhat fragile and might need to be adapted if the usage help message changes
+    Playground::setup("main_filename", |dirs, sandbox| {
+        sandbox.mkdir("main_filename");
+        sandbox.with_files(&[FileWithContent(
+            "script.nu",
+            r#"def main [foo: string] {}
+            "#,
+        )]);
+        let actual = nu!(cwd: dirs.test(), pipeline("nu script.nu"));
+        assert!(actual.err.contains("Usage: script.nu"));
+        assert!(!actual.err.contains("Usage: main"));
+    })
+}
+
+#[test]
+fn main_script_subcommand_help_uses_script_name1() {
+    // Note: this test is somewhat fragile and might need to be adapted if the usage help message changes
+    Playground::setup("main_filename", |dirs, sandbox| {
+        sandbox.mkdir("main_filename");
+        sandbox.with_files(&[FileWithContent(
+            "script.nu",
+            r#"def main [] {}
+            def 'main foo' [] {}
+            "#,
+        )]);
+        let actual = nu!(cwd: dirs.test(), pipeline("nu script.nu foo --help"));
+        assert!(actual.out.contains("> script.nu foo"));
+        assert!(!actual.out.contains("> main foo"));
+    })
+}
+
+#[test]
+fn main_script_subcommand_help_uses_script_name2() {
+    // Note: this test is somewhat fragile and might need to be adapted if the usage help message changes
+    Playground::setup("main_filename", |dirs, sandbox| {
+        sandbox.mkdir("main_filename");
+        sandbox.with_files(&[FileWithContent(
+            "script.nu",
+            r#"def main [] {}
+            def 'main foo' [bar: string] {}
+            "#,
+        )]);
+        let actual = nu!(cwd: dirs.test(), pipeline("nu script.nu foo"));
+        assert!(actual.err.contains("Usage: script.nu foo"));
+        assert!(!actual.err.contains("Usage: main foo"));
     })
 }

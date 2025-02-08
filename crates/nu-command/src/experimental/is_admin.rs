@@ -1,8 +1,4 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct IsAdmin;
@@ -12,7 +8,7 @@ impl Command for IsAdmin {
         "is-admin"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Check if nushell is running with administrator or root privileges."
     }
 
@@ -106,4 +102,10 @@ fn is_root_impl() -> bool {
     }
 
     elevated
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_root_impl() -> bool {
+    // in wasm we don't have a user system, so technically we are never root
+    false
 }

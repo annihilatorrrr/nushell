@@ -1,13 +1,14 @@
-use nu_test_support::fs::Stub::FileWithContentToBeTrimmed;
+use nu_test_support::fs::Stub::{FileWithContent, FileWithContentToBeTrimmed};
 use nu_test_support::playground::Playground;
 use nu_test_support::{nu, nu_repl_code};
 use pretty_assertions::assert_eq;
+use rstest::rstest;
 
 #[test]
 fn module_private_import_decl() {
     Playground::setup("module_private_import_decl", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     use spam.nu foo-helper
@@ -15,7 +16,7 @@ fn module_private_import_decl() {
                     export def foo [] { foo-helper }
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     def get-foo [] { "foo" }
@@ -35,7 +36,7 @@ fn module_private_import_decl() {
 fn module_private_import_alias() {
     Playground::setup("module_private_import_alias", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     use spam.nu foo-helper
@@ -43,7 +44,7 @@ fn module_private_import_alias() {
                     export def foo [] { foo-helper }
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     export alias foo-helper = echo "foo"
@@ -62,13 +63,13 @@ fn module_private_import_alias() {
 fn module_private_import_decl_not_public() {
     Playground::setup("module_private_import_decl_not_public", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     use spam.nu foo-helper
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     def get-foo [] { "foo" }
@@ -88,13 +89,13 @@ fn module_private_import_decl_not_public() {
 fn module_public_import_decl() {
     Playground::setup("module_public_import_decl", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export use spam.nu foo
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     def foo-helper [] { "foo" }
@@ -114,13 +115,13 @@ fn module_public_import_decl() {
 fn module_public_import_alias() {
     Playground::setup("module_public_import_alias", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export use spam.nu foo
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     export alias foo = echo "foo"
@@ -139,25 +140,25 @@ fn module_public_import_alias() {
 fn module_nested_imports() {
     Playground::setup("module_nested_imports", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export use spam.nu [ foo bar ]
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 "
                     export use spam2.nu [ foo bar ]
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam2.nu",
                 "
                     export use spam3.nu [ foo bar ]
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam3.nu",
                 r#"
                     export def foo [] { "foo" }
@@ -183,25 +184,25 @@ fn module_nested_imports_in_dirs() {
             .mkdir("spam")
             .mkdir("spam/spam2")
             .mkdir("spam/spam3")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export use spam/spam.nu [ foo bar ]
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam/spam.nu",
                 "
                     export use spam2/spam2.nu [ foo bar ]
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam/spam2/spam2.nu",
                 "
                     export use ../spam3/spam3.nu [ foo bar ]
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam/spam3/spam3.nu",
                 r#"
                     export def foo [] { "foo" }
@@ -224,13 +225,13 @@ fn module_nested_imports_in_dirs() {
 fn module_public_import_decl_prefixed() {
     Playground::setup("module_public_import_decl", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export use spam.nu
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     def foo-helper [] { "foo" }
@@ -253,26 +254,26 @@ fn module_nested_imports_in_dirs_prefixed() {
             .mkdir("spam")
             .mkdir("spam/spam2")
             .mkdir("spam/spam3")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 r#"
                     export use spam/spam.nu [ "spam2 foo" "spam2 spam3 bar" ]
                 "#,
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam/spam.nu",
                 "
                     export use spam2/spam2.nu
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam/spam2/spam2.nu",
                 "
                     export use ../spam3/spam3.nu
                     export use ../spam3/spam3.nu foo
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam/spam3/spam3.nu",
                 r#"
                     export def foo [] { "foo" }
@@ -295,7 +296,7 @@ fn module_nested_imports_in_dirs_prefixed() {
 fn module_import_env_1() {
     Playground::setup("module_import_env_1", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export-env { source-env spam.nu }
@@ -303,7 +304,7 @@ fn module_import_env_1() {
                     export def foo [] { $env.FOO_HELPER }
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     export-env { $env.FOO_HELPER = "foo" }
@@ -322,13 +323,13 @@ fn module_import_env_1() {
 fn module_import_env_2() {
     Playground::setup("module_import_env_2", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "main.nu",
                 "
                     export-env { source-env spam.nu }
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 r#"
                     export-env { $env.FOO = "foo" }
@@ -346,7 +347,7 @@ fn module_import_env_2() {
 #[test]
 fn module_cyclical_imports_0() {
     Playground::setup("module_cyclical_imports_0", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             "
                     use eggs.nu
@@ -357,14 +358,14 @@ fn module_cyclical_imports_0() {
 
         let actual = nu!(cwd: dirs.test(), &inp.join("; "));
 
-        assert!(actual.err.contains("module not found"));
+        assert!(actual.err.contains("Module not found"));
     })
 }
 
 #[test]
 fn module_cyclical_imports_1() {
     Playground::setup("module_cyclical_imports_1", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             "
                     use spam.nu
@@ -383,13 +384,13 @@ fn module_cyclical_imports_1() {
 fn module_cyclical_imports_2() {
     Playground::setup("module_cyclical_imports_2", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 "
                     use eggs.nu
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "eggs.nu",
                 "
                     use spam.nu
@@ -408,19 +409,19 @@ fn module_cyclical_imports_2() {
 fn module_cyclical_imports_3() {
     Playground::setup("module_cyclical_imports_3", |dirs, sandbox| {
         sandbox
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "spam.nu",
                 "
                     use eggs.nu
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "eggs.nu",
                 "
                     use bacon.nu
                 ",
             )])
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "bacon.nu",
                 "
                     use spam.nu
@@ -438,7 +439,7 @@ fn module_cyclical_imports_3() {
 #[test]
 fn module_import_const_file() {
     Playground::setup("module_import_const_file", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             r#"
                 export def foo [] { "foo" }
@@ -456,7 +457,7 @@ fn module_import_const_file() {
 #[test]
 fn module_import_const_module_name() {
     Playground::setup("module_import_const_file", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             r#"
                 export def foo [] { "foo" }
@@ -612,6 +613,29 @@ fn deep_import_patterns() {
     assert_eq!(actual.out, "foo");
 }
 
+#[rstest]
+fn deep_import_aliased_external_args(
+    #[values(
+        "use spam; spam eggs beans foo bar",
+        "use spam eggs; eggs beans foo bar",
+        "use spam eggs beans; beans foo bar",
+        "use spam eggs beans foo; foo bar"
+    )]
+    input: &str,
+) {
+    let module_decl = "
+        module spam {
+            export module eggs {
+                export module beans {
+                    export alias foo = ^echo
+                }
+            }
+        }
+    ";
+    let actual = nu!(format!("{module_decl}; {input}"));
+    assert_eq!(actual.out, "bar");
+}
+
 #[test]
 fn module_dir() {
     let import = "use samples/spam";
@@ -759,4 +783,163 @@ fn nested_list_export_works() {
     let inp = &[module, "use spam [sausage eggs]", "eggs bacon"];
     let actual = nu!(&inp.join("; "));
     assert_eq!(actual.out, "bacon");
+}
+
+#[test]
+fn reload_submodules() {
+    Playground::setup("reload_submodule_changed_file", |dirs, sandbox| {
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export module animals.nu"#),
+            FileWithContent("animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f animals.nu"#,
+            "use voice.nu",
+            "(voice animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        // should also verify something unchanged if `use voice`.
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'meow'}" | save -f animals.nu"#,
+            "use voice",
+            "(voice animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        // should also works if we use members directly.
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export module animals.nu"#),
+            FileWithContent("animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+        let inp = [
+            "use voice.nu animals cat",
+            r#""export def cat [] {'woem'}" | save -f animals.nu"#,
+            "use voice.nu animals cat",
+            "(cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+    });
+}
+
+#[test]
+fn use_submodules() {
+    Playground::setup("use_submodules", |dirs, sandbox| {
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export use animals.nu"#),
+            FileWithContent("animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f animals.nu"#,
+            "use voice.nu",
+            "(voice animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        // should also verify something unchanged if `use voice`.
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'meow'}" | save -f animals.nu"#,
+            "use voice",
+            "(voice animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        // also verify something is changed when using members.
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export use animals.nu cat"#),
+            FileWithContent("animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f animals.nu"#,
+            "use voice.nu",
+            "(voice cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export use animals.nu *"#),
+            FileWithContent("animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f animals.nu"#,
+            "use voice.nu",
+            "(voice cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export use animals.nu [cat]"#),
+            FileWithContent("animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f animals.nu"#,
+            "use voice.nu",
+            "(voice cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+    });
+}
+
+#[test]
+fn use_nested_submodules() {
+    Playground::setup("use_submodules", |dirs, sandbox| {
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export use animals.nu"#),
+            FileWithContent("animals.nu", r#"export use nested_animals.nu"#),
+            FileWithContent("nested_animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f nested_animals.nu"#,
+            "use voice.nu",
+            "(voice animals nested_animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        sandbox.with_files(&[
+            FileWithContent("voice.nu", r#"export use animals.nu"#),
+            FileWithContent("animals.nu", r#"export use nested_animals.nu cat"#),
+            FileWithContent("nested_animals.nu", "export def cat [] { 'meow'}"),
+        ]);
+        let inp = [
+            "use voice.nu",
+            r#""export def cat [] {'woem'}" | save -f nested_animals.nu"#,
+            "use voice.nu",
+            "(voice animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+
+        sandbox.with_files(&[
+            FileWithContent("animals.nu", r#"export use nested_animals.nu cat"#),
+            FileWithContent("nested_animals.nu", "export def cat [] { 'meow' }"),
+        ]);
+        let inp = [
+            "module voice { export module animals.nu }",
+            "use voice",
+            r#""export def cat [] {'woem'}" | save -f nested_animals.nu"#,
+            "use voice.nu",
+            "(voice animals cat) == 'woem'",
+        ];
+        let actual = nu!(cwd: dirs.test(), nu_repl_code(&inp));
+        assert_eq!(actual.out, "true");
+    })
 }

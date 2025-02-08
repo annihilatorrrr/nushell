@@ -1,12 +1,6 @@
 use crate::help::highlight_search_in_table;
 use nu_color_config::StyleComputer;
-use nu_engine::{scope::ScopeData, CallExt};
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    span, Category, Example, IntoInterruptiblePipelineData, IntoPipelineData, PipelineData,
-    ShellError, Signature, Span, Spanned, SyntaxShape, Type, Value,
-};
+use nu_engine::{command_prelude::*, scope::ScopeData};
 
 #[derive(Clone)]
 pub struct HelpAliases;
@@ -16,7 +10,7 @@ impl Command for HelpAliases {
         "help aliases"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Show help on nushell aliases."
     }
 
@@ -31,10 +25,10 @@ impl Command for HelpAliases {
             .named(
                 "find",
                 SyntaxShape::String,
-                "string to find in alias names and usage",
+                "string to find in alias names and descriptions",
                 Some('f'),
             )
-            .input_output_types(vec![(Type::Nothing, Type::Table(vec![]))])
+            .input_output_types(vec![(Type::Nothing, Type::table())])
             .allow_variants_without_examples(true)
     }
 
@@ -51,7 +45,7 @@ impl Command for HelpAliases {
                 result: None,
             },
             Example {
-                description: "search for string in alias names and usages",
+                description: "search for string in alias names and descriptions",
                 example: "help aliases --find my-alias",
                 result: None,
             },
@@ -92,22 +86,17 @@ pub fn help_aliases(
         let found_cmds_vec = highlight_search_in_table(
             all_cmds_vec,
             &f.item,
-            &["name", "usage"],
+            &["name", "description"],
             &string_style,
             &highlight_style,
         )?;
 
-        return Ok(found_cmds_vec
-            .into_iter()
-            .into_pipeline_data(engine_state.ctrlc.clone()));
+        return Ok(Value::list(found_cmds_vec, head).into_pipeline_data());
     }
 
     if rest.is_empty() {
         let found_cmds_vec = build_help_aliases(engine_state, stack, head);
-
-        Ok(found_cmds_vec
-            .into_iter()
-            .into_pipeline_data(engine_state.ctrlc.clone()))
+        Ok(Value::list(found_cmds_vec, head).into_pipeline_data())
     } else {
         let mut name = String::new();
 
@@ -120,20 +109,20 @@ pub fn help_aliases(
 
         let Some(alias) = engine_state.find_decl(name.as_bytes(), &[]) else {
             return Err(ShellError::AliasNotFound {
-                span: span(&rest.iter().map(|r| r.span).collect::<Vec<Span>>()),
+                span: Span::merge_many(rest.iter().map(|s| s.span)),
             });
         };
 
         let Some(alias) = engine_state.get_decl(alias).as_alias() else {
             return Err(ShellError::AliasNotFound {
-                span: span(&rest.iter().map(|r| r.span).collect::<Vec<Span>>()),
+                span: Span::merge_many(rest.iter().map(|s| s.span)),
             });
         };
 
         let alias_expansion =
             String::from_utf8_lossy(engine_state.get_span_contents(alias.wrapped_call.span));
-        let usage = alias.usage();
-        let extra_usage = alias.extra_usage();
+        let description = alias.description();
+        let extra_desc = alias.extra_description();
 
         // TODO: merge this into documentation.rs at some point
         const G: &str = "\x1b[32m"; // green
@@ -142,11 +131,11 @@ pub fn help_aliases(
 
         let mut long_desc = String::new();
 
-        long_desc.push_str(usage);
+        long_desc.push_str(description);
         long_desc.push_str("\n\n");
 
-        if !extra_usage.is_empty() {
-            long_desc.push_str(extra_usage);
+        if !extra_desc.is_empty() {
+            long_desc.push_str(extra_desc);
             long_desc.push_str("\n\n");
         }
 
@@ -154,8 +143,8 @@ pub fn help_aliases(
         long_desc.push_str("\n\n");
         long_desc.push_str(&format!("{G}Expansion{RESET}:\n  {alias_expansion}"));
 
-        let config = engine_state.get_config();
-        if !config.use_ansi_coloring {
+        let config = stack.get_config(engine_state);
+        if !config.use_ansi_coloring.get(engine_state) {
             long_desc = nu_utils::strip_ansi_string_likely(long_desc);
         }
 

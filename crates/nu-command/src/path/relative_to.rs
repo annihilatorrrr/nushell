@@ -1,15 +1,8 @@
-use std::path::Path;
-
-use nu_engine::CallExt;
-use nu_path::expand_to_real_path;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
-use nu_protocol::{
-    engine::Command, Category, Example, PipelineData, ShellError, Signature, Span, Spanned,
-    SyntaxShape, Type, Value,
-};
-
 use super::PathSubcommandArguments;
+use nu_engine::command_prelude::*;
+use nu_path::expand_to_real_path;
+use nu_protocol::engine::StateWorkingSet;
+use std::path::Path;
 
 struct Arguments {
     path: Spanned<String>,
@@ -42,11 +35,11 @@ impl Command for SubCommand {
             .category(Category::Path)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Express a path as relative to another path."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"Can be used only when the input and the argument paths are either both
 absolute or both relative. The argument path needs to be a parent of the input
 path."#
@@ -74,7 +67,7 @@ path."#
         }
         input.map(
             move |value| super::operate(&relative_to, &args, value, head),
-            engine_state.ctrlc.clone(),
+            engine_state.signals(),
         )
     }
 
@@ -95,7 +88,7 @@ path."#
         }
         input.map(
             move |value| super::operate(&relative_to, &args, value, head),
-            working_set.permanent().ctrlc.clone(),
+            working_set.permanent().signals(),
         )
     }
 

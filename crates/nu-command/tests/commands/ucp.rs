@@ -1,13 +1,12 @@
 use nu_test_support::fs::file_contents;
 use nu_test_support::fs::{
-    files_exist_at, AbsoluteFile,
+    files_exist_at,
     Stub::{EmptyFile, FileWithContent, FileWithPermission},
 };
 use nu_test_support::nu;
 use nu_test_support::playground::Playground;
 
 use rstest::rstest;
-use std::path::Path;
 
 #[cfg(not(target_os = "windows"))]
 const PATH_SEPARATOR: &str = "/";
@@ -55,7 +54,7 @@ fn copies_the_file_inside_directory_if_path_to_copy_is_directory() {
 
 fn copies_the_file_inside_directory_if_path_to_copy_is_directory_impl(progress: bool) {
     Playground::setup("ucp_test_2", |dirs, _| {
-        let expected_file = AbsoluteFile::new(dirs.test().join("sample.ini"));
+        let expected_file = dirs.test().join("sample.ini");
         let progress_flag = if progress { "-p" } else { "" };
 
         // Get the hash of the file content to check integrity after copy.
@@ -64,13 +63,13 @@ fn copies_the_file_inside_directory_if_path_to_copy_is_directory_impl(progress: 
             cwd: dirs.formats(),
             "cp {} ../formats/sample.ini {}",
             progress_flag,
-            expected_file.dir()
+            expected_file.parent().unwrap().as_os_str().to_str().unwrap(),
         );
 
         assert!(dirs.test().join("sample.ini").exists());
 
         // Check the integrity of the file.
-        let after_cp_hash = get_file_hash(expected_file);
+        let after_cp_hash = get_file_hash(expected_file.display());
         assert_eq!(first_hash, after_cp_hash);
     })
 }
@@ -113,7 +112,7 @@ fn copies_the_directory_inside_directory_if_path_to_copy_is_directory_and_with_r
     Playground::setup("ucp_test_4", |dirs, sandbox| {
         sandbox
             .within("originals")
-            .with_files(vec![
+            .with_files(&[
                 EmptyFile("yehuda.txt"),
                 EmptyFile("jttxt"),
                 EmptyFile("andres.txt"),
@@ -131,11 +130,7 @@ fn copies_the_directory_inside_directory_if_path_to_copy_is_directory_and_with_r
 
         assert!(expected_dir.exists());
         assert!(files_exist_at(
-            vec![
-                Path::new("yehuda.txt"),
-                Path::new("jttxt"),
-                Path::new("andres.txt")
-            ],
+            &["yehuda.txt", "jttxt", "andres.txt"],
             &expected_dir
         ));
     })
@@ -151,19 +146,19 @@ fn deep_copies_with_recursive_flag_impl(progress: bool) {
     Playground::setup("ucp_test_5", |dirs, sandbox| {
         sandbox
             .within("originals")
-            .with_files(vec![EmptyFile("manifest.txt")])
+            .with_files(&[EmptyFile("manifest.txt")])
             .within("originals/contributors")
-            .with_files(vec![
+            .with_files(&[
                 EmptyFile("yehuda.txt"),
                 EmptyFile("jttxt"),
                 EmptyFile("andres.txt"),
             ])
             .within("originals/contributors/JT")
-            .with_files(vec![EmptyFile("errors.txt"), EmptyFile("multishells.txt")])
+            .with_files(&[EmptyFile("errors.txt"), EmptyFile("multishells.txt")])
             .within("originals/contributors/andres")
-            .with_files(vec![EmptyFile("coverage.txt"), EmptyFile("commands.txt")])
+            .with_files(&[EmptyFile("coverage.txt"), EmptyFile("commands.txt")])
             .within("originals/contributors/yehuda")
-            .with_files(vec![EmptyFile("defer-evaluation.txt")])
+            .with_files(&[EmptyFile("defer-evaluation.txt")])
             .mkdir("expected");
 
         let expected_dir = dirs.test().join("expected").join("originals");
@@ -181,15 +176,15 @@ fn deep_copies_with_recursive_flag_impl(progress: bool) {
 
         assert!(expected_dir.exists());
         assert!(files_exist_at(
-            vec![Path::new("errors.txt"), Path::new("multishells.txt")],
+            &["errors.txt", "multishells.txt"],
             jts_expected_copied_dir
         ));
         assert!(files_exist_at(
-            vec![Path::new("coverage.txt"), Path::new("commands.txt")],
+            &["coverage.txt", "commands.txt"],
             andres_expected_copied_dir
         ));
         assert!(files_exist_at(
-            vec![Path::new("defer-evaluation.txt")],
+            &["defer-evaluation.txt"],
             yehudas_expected_copied_dir
         ));
     })
@@ -220,13 +215,13 @@ fn copies_using_path_with_wildcard_impl(progress: bool) {
         );
 
         assert!(files_exist_at(
-            vec![
-                Path::new("caco3_plastics.csv"),
-                Path::new("cargo_sample.toml"),
-                Path::new("jt.xml"),
-                Path::new("sample.ini"),
-                Path::new("sgml_description.json"),
-                Path::new("utf16.ini"),
+            &[
+                "caco3_plastics.csv",
+                "cargo_sample.toml",
+                "jt.xml",
+                "sample.ini",
+                "sgml_description.json",
+                "utf16.ini",
             ],
             dirs.test()
         ));
@@ -265,13 +260,13 @@ fn copies_using_a_glob_impl(progress: bool) {
         );
 
         assert!(files_exist_at(
-            vec![
-                Path::new("caco3_plastics.csv"),
-                Path::new("cargo_sample.toml"),
-                Path::new("jt.xml"),
-                Path::new("sample.ini"),
-                Path::new("sgml_description.json"),
-                Path::new("utf16.ini"),
+            &[
+                "caco3_plastics.csv",
+                "cargo_sample.toml",
+                "jt.xml",
+                "sample.ini",
+                "sgml_description.json",
+                "utf16.ini",
             ],
             dirs.test()
         ));
@@ -324,7 +319,7 @@ fn copy_files_using_glob_two_parents_up_using_multiple_dots() {
 
 fn copy_files_using_glob_two_parents_up_using_multiple_dots_imp(progress: bool) {
     Playground::setup("ucp_test_9", |dirs, sandbox| {
-        sandbox.within("foo").within("bar").with_files(vec![
+        sandbox.within("foo").within("bar").with_files(&[
             EmptyFile("jtjson"),
             EmptyFile("andres.xml"),
             EmptyFile("yehuda.yaml"),
@@ -341,7 +336,7 @@ fn copy_files_using_glob_two_parents_up_using_multiple_dots_imp(progress: bool) 
         );
 
         assert!(files_exist_at(
-            vec![
+            &[
                 "yehuda.yaml",
                 "jtjson",
                 "andres.xml",
@@ -363,7 +358,7 @@ fn copy_file_and_dir_from_two_parents_up_using_multiple_dots_to_current_dir_recu
     progress: bool,
 ) {
     Playground::setup("ucp_test_10", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("hello_there")]);
+        sandbox.with_files(&[EmptyFile("hello_there")]);
         sandbox.mkdir("hello_again");
         sandbox.within("foo").mkdir("bar");
 
@@ -377,7 +372,7 @@ fn copy_file_and_dir_from_two_parents_up_using_multiple_dots_to_current_dir_recu
 
         let expected = dirs.test().join("foo/bar");
 
-        assert!(files_exist_at(vec!["hello_there", "hello_again"], expected));
+        assert!(files_exist_at(&["hello_there", "hello_again"], expected));
     })
 }
 
@@ -390,7 +385,7 @@ fn copy_to_non_existing_dir() {
 
 fn copy_to_non_existing_dir_impl(progress: bool) {
     Playground::setup("ucp_test_11", |_dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("empty_file")]);
+        sandbox.with_files(&[EmptyFile("empty_file")]);
         let progress_flag = if progress { "-p" } else { "" };
 
         let actual = nu!(
@@ -413,7 +408,7 @@ fn copy_dir_contains_symlink_ignored_impl(progress: bool) {
     Playground::setup("ucp_test_12", |_dirs, sandbox| {
         sandbox
             .within("tmp_dir")
-            .with_files(vec![EmptyFile("hello_there"), EmptyFile("good_bye")])
+            .with_files(&[EmptyFile("hello_there"), EmptyFile("good_bye")])
             .within("tmp_dir")
             .symlink("good_bye", "dangle_symlink");
 
@@ -428,7 +423,7 @@ fn copy_dir_contains_symlink_ignored_impl(progress: bool) {
 
         // check hello_there exists inside `tmp_dir_2`, and `dangle_symlink` don't exists inside `tmp_dir_2`.
         let expected = sandbox.cwd().join("tmp_dir_2");
-        assert!(files_exist_at(vec!["hello_there"], expected));
+        assert!(files_exist_at(&["hello_there"], expected));
         // GNU cp will copy the broken symlink, so following their behavior
         // thus commenting out below
         // let path = expected.join("dangle_symlink");
@@ -446,7 +441,7 @@ fn copy_dir_contains_symlink_impl(progress: bool) {
     Playground::setup("ucp_test_13", |_dirs, sandbox| {
         sandbox
             .within("tmp_dir")
-            .with_files(vec![EmptyFile("hello_there"), EmptyFile("good_bye")])
+            .with_files(&[EmptyFile("hello_there"), EmptyFile("good_bye")])
             .within("tmp_dir")
             .symlink("good_bye", "dangle_symlink");
 
@@ -461,7 +456,7 @@ fn copy_dir_contains_symlink_impl(progress: bool) {
 
         // check hello_there exists inside `tmp_dir_2`, and `dangle_symlink` also exists inside `tmp_dir_2`.
         let expected = sandbox.cwd().join("tmp_dir_2");
-        assert!(files_exist_at(vec!["hello_there"], expected.clone()));
+        assert!(files_exist_at(&["hello_there"], expected.clone()));
         let path = expected.join("dangle_symlink");
         assert!(path.is_symlink());
     });
@@ -477,7 +472,7 @@ fn copy_dir_symlink_file_body_not_changed_impl(progress: bool) {
     Playground::setup("ucp_test_14", |_dirs, sandbox| {
         sandbox
             .within("tmp_dir")
-            .with_files(vec![EmptyFile("hello_there"), EmptyFile("good_bye")])
+            .with_files(&[EmptyFile("hello_there"), EmptyFile("good_bye")])
             .within("tmp_dir")
             .symlink("good_bye", "dangle_symlink");
 
@@ -507,7 +502,7 @@ fn copy_identical_file() {
 
 fn copy_identical_file_impl(progress: bool) {
     Playground::setup("ucp_test_15", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("same.txt")]);
+        sandbox.with_files(&[EmptyFile("same.txt")]);
 
         let progress_flag = if progress { "-p" } else { "" };
 
@@ -538,7 +533,7 @@ fn copy_ignores_ansi() {
 
 fn copy_ignores_ansi_impl(progress: bool) {
     Playground::setup("ucp_test_16", |_dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("test.txt")]);
+        sandbox.with_files(&[EmptyFile("test.txt")]);
 
         let progress_flag = if progress { "-p" } else { "" };
 
@@ -563,7 +558,7 @@ fn copy_file_not_exists_dst() {
 #[cfg(unix)]
 fn copy_file_not_exists_dst_impl(progress: bool) {
     Playground::setup("ucp_test_17", |_dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("valid.txt")]);
+        sandbox.with_files(&[EmptyFile("valid.txt")]);
 
         let progress_flag = if progress { "-p" } else { "" };
 
@@ -589,7 +584,7 @@ fn copy_file_with_read_permission() {
 
 fn copy_file_with_read_permission_impl(progress: bool) {
     Playground::setup("ucp_test_18", |_dirs, sandbox| {
-        sandbox.with_files(vec![
+        sandbox.with_files(&[
             EmptyFile("valid.txt"),
             FileWithPermission("invalid_prem.txt", false),
         ]);
@@ -615,9 +610,7 @@ static TEST_COPY_TO_FOLDER: &str = "hello_dir/";
 static TEST_COPY_TO_FOLDER_FILE: &str = "hello_dir/hello_world.txt";
 static TEST_COPY_FROM_FOLDER: &str = "hello_dir_with_file/";
 static TEST_COPY_FROM_FOLDER_FILE: &str = "hello_dir_with_file/hello_world.txt";
-#[cfg(not(target_os = "macos"))]
 static TEST_COPY_TO_FOLDER_NEW: &str = "hello_dir_new";
-#[cfg(not(target_os = "macos"))]
 static TEST_COPY_TO_FOLDER_NEW_FILE: &str = "hello_dir_new/hello_world.txt";
 
 #[test]
@@ -712,7 +705,6 @@ fn test_cp_multiple_files() {
 }
 
 #[test]
-#[cfg(not(target_os = "macos"))]
 fn test_cp_recurse() {
     Playground::setup("ucp_test_22", |dirs, sandbox| {
         // Create the relevant target directories
@@ -775,7 +767,7 @@ fn test_cp_arg_force() {
     Playground::setup("ucp_test_24", |dirs, sandbox| {
         let src = dirs.fixtures.join("cp").join(TEST_HELLO_WORLD_SOURCE);
         let src_hash = get_file_hash(src.display());
-        sandbox.with_files(vec![FileWithPermission("invalid_prem.txt", false)]);
+        sandbox.with_files(&[FileWithPermission("invalid_prem.txt", false)]);
 
         nu!(
         cwd: dirs.root(),
@@ -827,7 +819,7 @@ fn test_cp_nested_directory_to_itself_disallowed() {
 #[test]
 fn test_cp_same_file_force() {
     Playground::setup("ucp_test_27", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("f")]);
+        sandbox.with_files(&[EmptyFile("f")]);
         let actual = nu!(
         cwd: dirs.test(),
         "cp --force {} {}",
@@ -846,14 +838,13 @@ fn test_cp_arg_no_clobber() {
         let target = dirs.fixtures.join("cp").join(TEST_HOW_ARE_YOU_SOURCE);
         let target_hash = get_file_hash(target.display());
 
-        let actual = nu!(
-        cwd: dirs.root(),
-        "cp {} {} --no-clobber",
-        src.display(),
-        target.display()
+        let _ = nu!(
+            cwd: dirs.root(),
+            "cp {} {} --no-clobber",
+            src.display(),
+            target.display()
         );
         let after_cp_hash = get_file_hash(target.display());
-        assert!(actual.err.contains("not replacing"));
         // Check content was not clobbered
         assert_eq!(after_cp_hash, target_hash);
     });
@@ -862,8 +853,8 @@ fn test_cp_arg_no_clobber() {
 #[test]
 fn test_cp_arg_no_clobber_twice() {
     Playground::setup("ucp_test_29", |dirs, sandbox| {
-        sandbox.with_files(vec![
-            EmptyFile("source.txt"),
+        sandbox.with_files(&[
+            FileWithContent("source.txt", "fake data"),
             FileWithContent("source_with_body.txt", "some-body"),
         ]);
         nu!(
@@ -906,8 +897,14 @@ fn test_cp_debug_default() {
         #[cfg(target_os = "linux")]
         if !actual
             .out
-            .contains("copy offload: unknown, reflink: unsupported, sparse detection: no")
+            .contains("copy offload: yes, reflink: unsupported, sparse detection: no")
         {
+            panic!("{}", format!("Failure: stdout was \n{}", actual.out));
+        }
+        #[cfg(target_os = "freebsd")]
+        if !actual.out.contains(
+            "copy offload: unsupported, reflink: unsupported, sparse detection: unsupported",
+        ) {
             panic!("{}", format!("Failure: stdout was \n{}", actual.out));
         }
 
@@ -961,7 +958,7 @@ fn test_cp_only_source_no_dest() {
 #[test]
 fn test_cp_with_vars() {
     Playground::setup("ucp_test_33", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("input")]);
+        sandbox.with_files(&[EmptyFile("input")]);
         nu!(
         cwd: dirs.test(),
         "let src = 'input'; let dst = 'target'; cp $src $dst",
@@ -974,7 +971,7 @@ fn test_cp_with_vars() {
 fn test_cp_destination_after_cd() {
     Playground::setup("ucp_test_34", |dirs, sandbox| {
         sandbox.mkdir("test");
-        sandbox.with_files(vec![EmptyFile("test/file.txt")]);
+        sandbox.with_files(&[EmptyFile("test/file.txt")]);
         nu!(
         cwd: dirs.test(),
             // Defining variable avoid path expansion of cp argument.
@@ -986,13 +983,13 @@ fn test_cp_destination_after_cd() {
 }
 
 #[rstest]
-#[case(r#"'a]c'"#)]
-#[case(r#"'a[c'"#)]
-#[case(r#"'a[bc]d'"#)]
-#[case(r#"'a][c'"#)]
+#[case("a]c")]
+#[case("a[c")]
+#[case("a[bc]d")]
+#[case("a][c")]
 fn copies_files_with_glob_metachars(#[case] src_name: &str) {
     Playground::setup("ucp_test_34", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContent(
+        sandbox.with_files(&[FileWithContent(
             src_name,
             "What is the sound of one hand clapping?",
         )]);
@@ -1005,7 +1002,41 @@ fn copies_files_with_glob_metachars(#[case] src_name: &str) {
 
         let actual = nu!(
             cwd: dirs.test(),
-            "cp {} {}",
+            "cp '{}' {}",
+            src.display(),
+            TEST_HELLO_WORLD_DEST
+        );
+
+        assert!(actual.err.is_empty());
+        assert!(dirs.test().join(TEST_HELLO_WORLD_DEST).exists());
+
+        //// Get the hash of the copied file content to check against first_hash.
+        //let after_cp_hash = get_file_hash(dirs.test().join(TEST_HELLO_WORLD_DEST).display());
+        //assert_eq!(src_hash, after_cp_hash);
+    });
+}
+
+#[rstest]
+#[case("a]c")]
+#[case("a[c")]
+#[case("a[bc]d")]
+#[case("a][c")]
+fn copies_files_with_glob_metachars_when_input_are_variables(#[case] src_name: &str) {
+    Playground::setup("ucp_test_35", |dirs, sandbox| {
+        sandbox.with_files(&[FileWithContent(
+            src_name,
+            "What is the sound of one hand clapping?",
+        )]);
+
+        let src = dirs.test().join(src_name);
+
+        // -- open command doesn't like file name
+        //// Get the hash of the file content to check integrity after copy.
+        //let src_hash = get_file_hash(src.display());
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            "let f = '{}'; cp $f {}",
             src.display(),
             TEST_HELLO_WORLD_DEST
         );
@@ -1026,6 +1057,7 @@ fn copies_files_with_glob_metachars(#[case] src_name: &str) {
 // windows doesn't allow filename with `*`.
 fn copies_files_with_glob_metachars_nw(#[case] src_name: &str) {
     copies_files_with_glob_metachars(src_name);
+    copies_files_with_glob_metachars_when_input_are_variables(src_name);
 }
 
 #[cfg(not(windows))]
@@ -1034,7 +1066,7 @@ fn test_cp_preserve_timestamps() {
     // Preserve timestamp and mode
 
     Playground::setup("ucp_test_35", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("file.txt")]);
+        sandbox.with_files(&[EmptyFile("file.txt")]);
         let actual = nu!(
         cwd: dirs.test(),
         "
@@ -1058,7 +1090,7 @@ fn test_cp_preserve_only_timestamps() {
     // Preserve timestamps and discard all other attributes including mode
 
     Playground::setup("ucp_test_35", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("file.txt")]);
+        sandbox.with_files(&[EmptyFile("file.txt")]);
         let actual = nu!(
         cwd: dirs.test(),
         "
@@ -1083,7 +1115,7 @@ fn test_cp_preserve_nothing() {
     // Preserve no attributes
 
     Playground::setup("ucp_test_35", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("file.txt")]);
+        sandbox.with_files(&[EmptyFile("file.txt")]);
         let actual = nu!(
         cwd: dirs.test(),
         "
@@ -1098,5 +1130,119 @@ fn test_cp_preserve_nothing() {
         );
         assert!(actual.err.is_empty());
         assert_eq!(actual.out, "true");
+    });
+}
+
+#[test]
+fn test_cp_inside_glob_metachars_dir() {
+    Playground::setup("open_files_inside_glob_metachars_dir", |dirs, sandbox| {
+        let sub_dir = "test[]";
+        sandbox
+            .within(sub_dir)
+            .with_files(&[FileWithContent("test_file.txt", "hello")]);
+
+        let actual = nu!(
+            cwd: dirs.test().join(sub_dir),
+            "cp test_file.txt ../",
+        );
+
+        assert!(actual.err.is_empty());
+        assert!(files_exist_at(
+            &["test_file.txt"],
+            dirs.test().join(sub_dir)
+        ));
+        assert!(files_exist_at(&["test_file.txt"], dirs.test()));
+    });
+}
+
+#[cfg(not(windows))]
+#[test]
+fn test_cp_to_customized_home_directory() {
+    Playground::setup("cp_to_home", |dirs, sandbox| {
+        std::env::set_var("HOME", dirs.test());
+        sandbox.with_files(&[EmptyFile("test_file.txt")]);
+        let actual = nu!(cwd: dirs.test(), "mkdir test; cp test_file.txt ~/test/");
+
+        assert!(actual.err.is_empty());
+        assert!(files_exist_at(&["test_file.txt"], dirs.test().join("test")));
+    })
+}
+
+#[test]
+fn cp_with_tilde() {
+    Playground::setup("cp_tilde", |dirs, sandbox| {
+        sandbox.within("~tilde").with_files(&[
+            EmptyFile("f1.txt"),
+            EmptyFile("f2.txt"),
+            EmptyFile("f3.txt"),
+        ]);
+        sandbox.within("~tilde2");
+        // cp directory
+        let actual = nu!(
+            cwd: dirs.test(),
+            "let f = '~tilde'; cp -r $f '~tilde2'; ls '~tilde2/~tilde' | length"
+        );
+        assert_eq!(actual.out, "3");
+
+        // cp file
+        let actual = nu!(cwd: dirs.test(), "cp '~tilde/f1.txt' ./");
+        assert!(actual.err.is_empty());
+        assert!(files_exist_at(&["f1.txt"], dirs.test().join("~tilde")));
+        assert!(files_exist_at(&["f1.txt"], dirs.test()));
+
+        // pass variable
+        let actual = nu!(cwd: dirs.test(), "let f = '~tilde/f2.txt'; cp $f ./");
+        assert!(actual.err.is_empty());
+        assert!(files_exist_at(&["f2.txt"], dirs.test().join("~tilde")));
+        assert!(files_exist_at(&["f1.txt"], dirs.test()));
+    })
+}
+
+#[test]
+fn copy_file_with_update_flag() {
+    copy_file_with_update_flag_impl(false);
+    copy_file_with_update_flag_impl(true);
+}
+
+fn copy_file_with_update_flag_impl(progress: bool) {
+    Playground::setup("cp_test_36", |_dirs, sandbox| {
+        sandbox.with_files(&[
+            EmptyFile("valid.txt"),
+            FileWithContent("newer_valid.txt", "body"),
+        ]);
+
+        let progress_flag = if progress { "-p" } else { "" };
+
+        let actual = nu!(
+            cwd: sandbox.cwd(),
+            "cp {} -u valid.txt newer_valid.txt; open newer_valid.txt",
+            progress_flag,
+        );
+        assert!(actual.out.contains("body"));
+
+        // create a file after assert to make sure that newest_valid.txt is newest
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        sandbox.with_files(&[FileWithContent("newest_valid.txt", "newest_body")]);
+        let actual = nu!(cwd: sandbox.cwd(), "cp {} -u newest_valid.txt valid.txt; open valid.txt", progress_flag);
+        assert_eq!(actual.out, "newest_body");
+
+        // when destination doesn't exist
+        let actual = nu!(cwd: sandbox.cwd(), "cp {} -u newest_valid.txt des_missing.txt; open des_missing.txt", progress_flag);
+        assert_eq!(actual.out, "newest_body");
+    });
+}
+
+#[test]
+fn cp_with_cd() {
+    Playground::setup("cp_test_37", |_dirs, sandbox| {
+        sandbox
+            .mkdir("tmp_dir")
+            .with_files(&[FileWithContent("tmp_dir/file.txt", "body")]);
+
+        let actual = nu!(
+            cwd: sandbox.cwd(),
+            r#"do { cd tmp_dir; let f = 'file.txt'; cp $f .. }; open file.txt"#,
+        );
+        assert!(actual.out.contains("body"));
     });
 }

@@ -1,31 +1,41 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{span, ModuleId, Span, VarId};
+use crate::{ModuleId, Span, VarId};
 use std::collections::HashSet;
 
+/// possible patterns after the first module level in an [`ImportPattern`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportPatternMember {
+    /// Wildcard import of items
     Glob { span: Span },
+    /// single specific module or item
     Name { name: Vec<u8>, span: Span },
+    /// list of items
     List { names: Vec<(Vec<u8>, Span)> },
 }
 
 impl ImportPatternMember {
     pub fn span(&self) -> Span {
-        let mut spans = vec![];
         match self {
-            ImportPatternMember::Glob { span } => spans.push(*span),
-            ImportPatternMember::Name { name: _, span } => spans.push(*span),
+            ImportPatternMember::Glob { span } | ImportPatternMember::Name { span, .. } => *span,
             ImportPatternMember::List { names } => {
-                for (_, span) in names {
-                    spans.push(*span);
-                }
+                let first = names
+                    .first()
+                    .map(|&(_, span)| span)
+                    .unwrap_or(Span::unknown());
+
+                let last = names
+                    .last()
+                    .map(|&(_, span)| span)
+                    .unwrap_or(Span::unknown());
+
+                Span::append(first, last)
             }
         }
-        span(&spans)
     }
 }
 
+/// The first item of a `use` statement needs to specify an explicit module
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportPatternHead {
     pub name: Vec<u8>,
@@ -33,6 +43,7 @@ pub struct ImportPatternHead {
     pub span: Span,
 }
 
+/// The pattern specifying modules in a `use` statement
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportPattern {
     pub head: ImportPatternHead,
@@ -59,13 +70,13 @@ impl ImportPattern {
     }
 
     pub fn span(&self) -> Span {
-        let mut spans = vec![self.head.span];
-
-        for member in &self.members {
-            spans.push(member.span());
-        }
-
-        span(&spans)
+        Span::append(
+            self.head.span,
+            self.members
+                .last()
+                .map(ImportPatternMember::span)
+                .unwrap_or(self.head.span),
+        )
     }
 
     pub fn with_hidden(self, hidden: HashSet<Vec<u8>>) -> Self {

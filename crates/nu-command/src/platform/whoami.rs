@@ -1,8 +1,4 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Whoami;
@@ -12,7 +8,7 @@ impl Command for Whoami {
         "whoami"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Get the current username using uutils/coreutils whoami."
     }
 

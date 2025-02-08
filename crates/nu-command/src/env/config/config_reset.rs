@@ -1,12 +1,9 @@
 use chrono::Local;
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Type,
-};
-use nu_utils::{get_default_config, get_default_env};
-use std::io::Write;
+use nu_engine::command_prelude::*;
+
+use nu_protocol::shell_error::io::IoError;
+use nu_utils::{get_scaffold_config, get_scaffold_env};
+use std::{io::Write, path::PathBuf};
 
 #[derive(Clone)]
 pub struct ConfigReset;
@@ -26,7 +23,7 @@ impl Command for ConfigReset {
             .category(Category::Env)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Reset nushell environment configurations to default, and saves old config files in the config location as oldconfig.nu and oldenv.nu."
     }
 
@@ -49,65 +46,63 @@ impl Command for ConfigReset {
         let only_env = call.has_flag(engine_state, stack, "env")?;
         let no_backup = call.has_flag(engine_state, stack, "without-backup")?;
         let span = call.head;
-        let mut config_path = match nu_path::config_dir() {
-            Some(path) => path,
-            None => {
-                return Err(ShellError::GenericError {
-                    error: "Could not find config path".into(),
-                    msg: "Could not find config path".into(),
-                    span: None,
-                    help: None,
-                    inner: vec![],
-                });
-            }
+        let Some(config_path) = nu_path::nu_config_dir() else {
+            return Err(ShellError::ConfigDirNotFound { span: None });
         };
-        config_path.push("nushell");
         if !only_env {
             let mut nu_config = config_path.clone();
             nu_config.push("config.nu");
-            let config_file = get_default_config();
+            let config_file = get_scaffold_config();
             if !no_backup {
                 let mut backup_path = config_path.clone();
                 backup_path.push(format!(
                     "oldconfig-{}.nu",
                     Local::now().format("%F-%H-%M-%S"),
                 ));
-                if std::fs::rename(nu_config.clone(), backup_path).is_err() {
-                    return Err(ShellError::FileNotFoundCustom {
-                        msg: "config.nu could not be backed up".into(),
+                if let Err(err) = std::fs::rename(nu_config.clone(), &backup_path) {
+                    return Err(ShellError::Io(IoError::new_with_additional_context(
+                        err.kind(),
                         span,
-                    });
+                        PathBuf::from(backup_path),
+                        "config.nu could not be backed up",
+                    )));
                 }
             }
-            if let Ok(mut file) = std::fs::File::create(nu_config) {
-                if writeln!(&mut file, "{config_file}").is_err() {
-                    return Err(ShellError::FileNotFoundCustom {
-                        msg: "config.nu could not be written to".into(),
+            if let Ok(mut file) = std::fs::File::create(&nu_config) {
+                if let Err(err) = writeln!(&mut file, "{config_file}") {
+                    return Err(ShellError::Io(IoError::new_with_additional_context(
+                        err.kind(),
                         span,
-                    });
+                        PathBuf::from(nu_config),
+                        "config.nu could not be written to",
+                    )));
                 }
             }
         }
         if !only_nu {
             let mut env_config = config_path.clone();
             env_config.push("env.nu");
-            let config_file = get_default_env();
+            let config_file = get_scaffold_env();
             if !no_backup {
                 let mut backup_path = config_path.clone();
                 backup_path.push(format!("oldenv-{}.nu", Local::now().format("%F-%H-%M-%S"),));
-                if std::fs::rename(env_config.clone(), backup_path).is_err() {
-                    return Err(ShellError::FileNotFoundCustom {
-                        msg: "env.nu could not be backed up".into(),
+                if let Err(err) = std::fs::rename(env_config.clone(), &backup_path) {
+                    return Err(ShellError::Io(IoError::new_with_additional_context(
+                        err.kind(),
                         span,
-                    });
+                        PathBuf::from(backup_path),
+                        "env.nu could not be backed up",
+                    )));
                 }
             }
-            if let Ok(mut file) = std::fs::File::create(env_config) {
-                if writeln!(&mut file, "{config_file}").is_err() {
-                    return Err(ShellError::FileNotFoundCustom {
-                        msg: "env.nu could not be written to".into(),
+            if let Ok(mut file) = std::fs::File::create(&env_config) {
+                if let Err(err) = writeln!(&mut file, "{config_file}") {
+                    return Err(ShellError::Io(IoError::new_with_additional_context(
+                        err.kind(),
                         span,
-                    });
+                        PathBuf::from(env_config),
+                        "env.nu could not be written to",
+                    )));
                 }
             }
         }

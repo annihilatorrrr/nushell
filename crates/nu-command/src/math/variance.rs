@@ -1,8 +1,5 @@
 use crate::math::utils::run_with_function;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -14,21 +11,30 @@ impl Command for SubCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("math variance")
-            .input_output_types(vec![(Type::List(Box::new(Type::Number)), Type::Number)])
+            .input_output_types(vec![
+                (Type::List(Box::new(Type::Number)), Type::Number),
+                (Type::table(), Type::record()),
+                (Type::record(), Type::record()),
+            ])
             .switch(
                 "sample",
                 "calculate sample variance (i.e. using N-1 as the denominator)",
                 Some('s'),
             )
+            .allow_variants_without_examples(true)
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns the variance of a list of numbers or of each column in a table."
     }
 
     fn search_terms(&self) -> Vec<&str> {
         vec!["deviation", "dispersion", "variation", "statistics"]
+    }
+
+    fn is_const(&self) -> bool {
+        true
     }
 
     fn run(
@@ -39,6 +45,16 @@ impl Command for SubCommand {
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let sample = call.has_flag(engine_state, stack, "sample")?;
+        run_with_function(call, input, compute_variance(sample))
+    }
+
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let sample = call.has_flag_const(working_set, "sample")?;
         run_with_function(call, input, compute_variance(sample))
     }
 
@@ -54,6 +70,14 @@ impl Command for SubCommand {
                 example: "[1 2 3 4 5] | math variance --sample",
                 result: Some(Value::test_float(2.5)),
             },
+            Example {
+                description: "Compute the variance of each column in a table",
+                example: "[[a b]; [1 2] [3 4]] | math variance",
+                result: Some(Value::test_record(record! {
+                    "a" => Value::test_int(1),
+                    "b" => Value::test_int(1),
+                })),
+            },
         ]
     }
 }
@@ -66,9 +90,9 @@ fn sum_of_squares(values: &[Value], span: Span) -> Result<Value, ShellError> {
         let v = match &value {
             Value::Int { .. } | Value::Float { .. } => Ok(value),
             Value::Error { error, .. } => Err(*error.clone()),
-            _ => Err(ShellError::UnsupportedInput {
-                msg: "Attempted to compute the sum of squares of a non-int, non-float value"
-                    .to_string(),
+            other => Err(ShellError::UnsupportedInput {
+                msg: format!("Attempted to compute the sum of squares of a non-int, non-float value '{}' with a type of `{}`.",
+                        other.coerce_string()?, other.get_type()),
                 input: "value originates from here".into(),
                 msg_span: span,
                 input_span: value.span(),

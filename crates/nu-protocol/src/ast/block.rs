@@ -1,7 +1,6 @@
 use super::Pipeline;
-use crate::{ast::PipelineElement, Signature, Span, Type, VarId};
+use crate::{engine::StateWorkingSet, ir::IrBlock, OutDest, Signature, Span, Type, VarId};
 use serde::{Deserialize, Serialize};
-use std::ops::{Index, IndexMut};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
@@ -9,8 +8,9 @@ pub struct Block {
     pub pipelines: Vec<Pipeline>,
     pub captures: Vec<VarId>,
     pub redirect_env: bool,
+    /// The block compiled to IR instructions. Not available for subexpressions.
+    pub ir_block: Option<IrBlock>,
     pub span: Option<Span>, // None option encodes no span to avoid using test_span()
-    pub recursive: Option<bool>, // does the block call itself?
 }
 
 impl Block {
@@ -21,19 +21,16 @@ impl Block {
     pub fn is_empty(&self) -> bool {
         self.pipelines.is_empty()
     }
-}
 
-impl Index<usize> for Block {
-    type Output = Pipeline;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.pipelines[index]
-    }
-}
-
-impl IndexMut<usize> for Block {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.pipelines[index]
+    pub fn pipe_redirection(
+        &self,
+        working_set: &StateWorkingSet,
+    ) -> (Option<OutDest>, Option<OutDest>) {
+        if let Some(first) = self.pipelines.first() {
+            first.pipe_redirection(working_set)
+        } else {
+            (None, None)
+        }
     }
 }
 
@@ -50,8 +47,8 @@ impl Block {
             pipelines: vec![],
             captures: vec![],
             redirect_env: false,
+            ir_block: None,
             span: None,
-            recursive: None,
         }
     }
 
@@ -61,27 +58,37 @@ impl Block {
             pipelines: Vec::with_capacity(capacity),
             captures: vec![],
             redirect_env: false,
+            ir_block: None,
             span: None,
-            recursive: None,
         }
     }
 
     pub fn output_type(&self) -> Type {
         if let Some(last) = self.pipelines.last() {
             if let Some(last) = last.elements.last() {
-                match last {
-                    PipelineElement::Expression(_, expr) => expr.ty.clone(),
-                    PipelineElement::Redirection(_, _, _, _) => Type::Any,
-                    PipelineElement::SeparateRedirection { .. } => Type::Any,
-                    PipelineElement::SameTargetRedirection { .. } => Type::Any,
-                    PipelineElement::And(_, expr) => expr.ty.clone(),
-                    PipelineElement::Or(_, expr) => expr.ty.clone(),
+                if last.redirection.is_some() {
+                    Type::Any
+                } else {
+                    last.expr.ty.clone()
                 }
             } else {
                 Type::Nothing
             }
         } else {
             Type::Nothing
+        }
+    }
+
+    /// Replace any `$in` variables in the initial element of pipelines within the block
+    pub fn replace_in_variable(
+        &mut self,
+        working_set: &mut StateWorkingSet<'_>,
+        new_var_id: VarId,
+    ) {
+        for pipeline in self.pipelines.iter_mut() {
+            if let Some(element) = pipeline.elements.first_mut() {
+                element.replace_in_variable(working_set, new_var_id);
+            }
         }
     }
 }
@@ -96,8 +103,8 @@ where
             pipelines: pipelines.collect(),
             captures: vec![],
             redirect_env: false,
+            ir_block: None,
             span: None,
-            recursive: None,
         }
     }
 }

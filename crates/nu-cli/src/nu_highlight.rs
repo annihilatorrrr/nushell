@@ -1,7 +1,7 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Type, Value};
-use reedline::Highlighter;
+use std::sync::Arc;
+
+use nu_engine::command_prelude::*;
+use reedline::{Highlighter, StyledText};
 
 #[derive(Clone)]
 pub struct NuHighlight;
@@ -17,7 +17,7 @@ impl Command for NuHighlight {
             .input_output_types(vec![(Type::String, Type::String)])
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Syntax highlight the input string."
     }
 
@@ -28,31 +28,28 @@ impl Command for NuHighlight {
     fn run(
         &self,
         engine_state: &EngineState,
-        _stack: &mut Stack,
+        stack: &mut Stack,
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let head = call.head;
 
-        let ctrlc = engine_state.ctrlc.clone();
-        let engine_state = std::sync::Arc::new(engine_state.clone());
-        let config = engine_state.get_config().clone();
+        let signals = engine_state.signals();
 
         let highlighter = crate::NuHighlighter {
-            engine_state,
-            config,
+            engine_state: Arc::new(engine_state.clone()),
+            stack: Arc::new(stack.clone()),
         };
 
         input.map(
-            move |x| match x.as_string() {
+            move |x| match x.coerce_into_string() {
                 Ok(line) => {
                     let highlights = highlighter.highlight(&line, line.len());
-
                     Value::string(highlights.render_simple(), head)
                 }
                 Err(err) => Value::error(err, head),
             },
-            ctrlc,
+            signals,
         )
     }
 
@@ -62,5 +59,18 @@ impl Command for NuHighlight {
             example: "'let x = 3' | nu-highlight",
             result: None,
         }]
+    }
+}
+
+/// A highlighter that does nothing
+///
+/// Used to remove highlighting from a reedline instance
+/// (letting NuHighlighter structs be dropped)
+#[derive(Default)]
+pub struct NoOpHighlighter {}
+
+impl Highlighter for NoOpHighlighter {
+    fn highlight(&self, _line: &str, _cursor: usize) -> reedline::StyledText {
+        StyledText::new()
     }
 }

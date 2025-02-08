@@ -1,11 +1,5 @@
-use nu_engine::{eval_block_with_early_return, CallExt};
-
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Closure, Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Type,
-    Value,
-};
+use nu_engine::{command_prelude::*, ClosureEval};
+use nu_protocol::engine::Closure;
 
 #[derive(Clone)]
 pub struct Reduce;
@@ -19,7 +13,7 @@ impl Command for Reduce {
         Signature::build("reduce")
             .input_output_types(vec![
                 (Type::List(Box::new(Type::Any)), Type::Any),
-                (Type::Table(vec![]), Type::Any),
+                (Type::table(), Type::Any),
                 (Type::Range, Type::Any),
             ])
             .named(
@@ -30,19 +24,15 @@ impl Command for Reduce {
             )
             .required(
                 "closure",
-                SyntaxShape::Closure(Some(vec![
-                    SyntaxShape::Any,
-                    SyntaxShape::Any,
-                    SyntaxShape::Int,
-                ])),
+                SyntaxShape::Closure(Some(vec![SyntaxShape::Any, SyntaxShape::Any])),
                 "Reducing function.",
             )
             .allow_variants_without_examples(true)
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
-        "Aggregate a list to a single value using an accumulator closure."
+    fn description(&self) -> &str {
+        "Aggregate a list (starting from the left) to a single value using an accumulator closure."
     }
 
     fn search_terms(&self) -> Vec<&str> {
@@ -57,6 +47,11 @@ impl Command for Reduce {
                 result: Some(Value::test_int(10)),
             },
             Example {
+                example: "[ 1 2 3 4 ] | reduce {|it, acc| $acc - $it }",
+                description: r#"`reduce` accumulates value from left to right, equivalent to (((1 - 2) - 3) - 4)."#,
+                result: Some(Value::test_int(-8)),
+            },
+            Example {
                 example:
                     "[ 8 7 6 ] | enumerate | reduce --fold 0 {|it, acc| $acc + $it.item + $it.index }",
                 description: "Sum values of a list, plus their indexes",
@@ -66,6 +61,11 @@ impl Command for Reduce {
                 example: "[ 1 2 3 4 ] | reduce --fold 10 {|it, acc| $acc + $it }",
                 description: "Sum values with a starting value (fold)",
                 result: Some(Value::test_int(20)),
+            },
+            Example {
+                example: r#"[[foo baz] [baz quux]] | reduce --fold "foobar" {|it, acc| $acc | str replace $it.0 $it.1}"#,
+                description: "Iteratively perform string replace (from left to right): 'foobar' -> 'bazbar' -> 'quuxbar'",
+                result: Some(Value::test_string("quuxbar")),
             },
             Example {
                 example: r#"[ i o t ] | reduce --fold "Arthur, King of the Britons" {|it, acc| $acc | str replace --all $it "X" }"#,
@@ -84,6 +84,15 @@ impl Command for Reduce {
                     "Concatenate a string with itself, using a range to determine the number of times.",
                 result: Some(Value::test_string("StrStrStr")),
             },
+            Example {
+                example: r#"[{a: 1} {b: 2} {c: 3}] | reduce {|it| merge $it}"#,
+                description: "Merge multiple records together, making use of the fact that the accumulated value is also supplied as pipeline input to the closure.",
+                result: Some(Value::test_record(record!(
+                    "a" => Value::test_int(1),
+                    "b" => Value::test_int(2),
+                    "c" => Value::test_int(3),
+                ))),
+            }
         ]
     }
 
@@ -94,79 +103,34 @@ impl Command for Reduce {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let span = call.head;
-
+        let head = call.head;
         let fold: Option<Value> = call.get_flag(engine_state, stack, "fold")?;
-        let capture_block: Closure = call.req(engine_state, stack, 0)?;
-        let mut stack = stack.captures_to_stack(capture_block.captures);
-        let block = engine_state.get_block(capture_block.block_id);
-        let ctrlc = engine_state.ctrlc.clone();
+        let closure: Closure = call.req(engine_state, stack, 0)?;
 
-        let orig_env_vars = stack.env_vars.clone();
-        let orig_env_hidden = stack.env_hidden.clone();
+        let mut iter = input.into_iter();
 
-        let redirect_stdout = call.redirect_stdout;
-        let redirect_stderr = call.redirect_stderr;
-
-        // To enumerate over the input (for the index argument),
-        // it must be converted into an iterator using into_iter().
-        let mut input_iter = input.into_iter();
-
-        let start_val = if let Some(val) = fold {
-            val
-        } else if let Some(val) = input_iter.next() {
-            val
-        } else {
-            return Err(ShellError::GenericError {
+        let mut acc = fold
+            .or_else(|| iter.next())
+            .ok_or_else(|| ShellError::GenericError {
                 error: "Expected input".into(),
                 msg: "needs input".into(),
-                span: Some(span),
+                span: Some(head),
                 help: None,
                 inner: vec![],
-            });
-        };
+            })?;
 
-        let mut acc = start_val;
+        let mut closure = ClosureEval::new(engine_state, stack, closure);
 
-        let mut input_iter = input_iter.peekable();
-
-        while let Some(x) = input_iter.next() {
-            // with_env() is used here to ensure that each iteration uses
-            // a different set of environment variables.
-            // Hence, a 'cd' in the first loop won't affect the next loop.
-            stack.with_env(&orig_env_vars, &orig_env_hidden);
-
-            // Element argument
-            if let Some(var) = block.signature.get_positional(0) {
-                if let Some(var_id) = &var.var_id {
-                    stack.add_var(*var_id, x);
-                }
-            }
-
-            // Accumulator argument
-            if let Some(var) = block.signature.get_positional(1) {
-                if let Some(var_id) = &var.var_id {
-                    stack.add_var(*var_id, acc);
-                }
-            }
-
-            acc = eval_block_with_early_return(
-                engine_state,
-                &mut stack,
-                block,
-                PipelineData::empty(),
-                // redirect stdout until its the last input value
-                redirect_stdout || input_iter.peek().is_some(),
-                redirect_stderr,
-            )?
-            .into_value(span);
-
-            if nu_utils::ctrl_c::was_pressed(&ctrlc) {
-                break;
-            }
+        for value in iter {
+            engine_state.signals().check(head)?;
+            acc = closure
+                .add_arg(value)
+                .add_arg(acc.clone())
+                .run_with_input(PipelineData::Value(acc, None))?
+                .into_value(head)?;
         }
 
-        Ok(acc.with_span(span).into_pipeline_data())
+        Ok(acc.with_span(head).into_pipeline_data())
     }
 }
 
@@ -176,8 +140,8 @@ mod test {
 
     #[test]
     fn test_examples() {
-        use crate::test_examples;
+        use crate::{test_examples_with_commands, Merge};
 
-        test_examples(Reduce {})
+        test_examples_with_commands(Reduce {}, &[&Merge])
     }
 }

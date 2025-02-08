@@ -18,7 +18,7 @@ fn early_return_if_false() {
 fn return_works_in_script_without_def_main() {
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
-        "nu early_return.nu"
+        "nu -n early_return.nu"
     ));
 
     assert!(actual.err.is_empty());
@@ -28,7 +28,13 @@ fn return_works_in_script_without_def_main() {
 fn return_works_in_script_with_def_main() {
     let actual = nu!(
         cwd: "tests/fixtures/formats",
-        pipeline("nu early_return_outside_main.nu")
+        pipeline("nu -n early_return_outside_main.nu")
     );
     assert!(actual.err.is_empty());
+}
+
+#[test]
+fn return_does_not_set_last_exit_code() {
+    let actual = nu!("hide-env LAST_EXIT_CODE; do --env { return 42 }; $env.LAST_EXIT_CODE?");
+    assert!(matches!(actual.out.as_str(), ""));
 }

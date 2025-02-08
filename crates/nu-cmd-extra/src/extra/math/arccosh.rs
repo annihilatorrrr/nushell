@@ -1,6 +1,4 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -23,7 +21,7 @@ impl Command for SubCommand {
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns the inverse of the hyperbolic cosine function."
     }
 
@@ -43,10 +41,7 @@ impl Command for SubCommand {
         if matches!(input, PipelineData::Empty) {
             return Err(ShellError::PipelineEmpty { dst_span: head });
         }
-        input.map(
-            move |value| operate(value, head),
-            engine_state.ctrlc.clone(),
-        )
+        input.map(move |value| operate(value, head), engine_state.signals())
     }
 
     fn examples(&self) -> Vec<Example> {

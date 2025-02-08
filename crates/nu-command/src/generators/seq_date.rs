@@ -1,12 +1,10 @@
-use chrono::naive::NaiveDate;
-use chrono::{Duration, Local};
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Spanned,
-    SyntaxShape, Type, Value,
-};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
+use nu_engine::command_prelude::*;
+use nu_protocol::FromValue;
+
+use std::fmt::Write;
+
+const NANOSECONDS_IN_DAY: i64 = 1_000_000_000i64 * 60i64 * 60i64 * 24i64;
 
 #[derive(Clone)]
 pub struct SeqDate;
@@ -16,7 +14,7 @@ impl Command for SeqDate {
         "seq date"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Print sequences of dates."
     }
 
@@ -44,15 +42,21 @@ impl Command for SeqDate {
             .named("end-date", SyntaxShape::String, "ending date", Some('e'))
             .named(
                 "increment",
-                SyntaxShape::Int,
-                "increment dates by this number",
+                SyntaxShape::OneOf(vec![SyntaxShape::Duration, SyntaxShape::Int]),
+                "increment dates by this duration (defaults to days if integer)",
                 Some('n'),
             )
             .named(
                 "days",
                 SyntaxShape::Int,
-                "number of days to print",
+                "number of days to print (ignored if periods is used)",
                 Some('d'),
+            )
+            .named(
+                "periods",
+                SyntaxShape::Int,
+                "number of periods to print",
+                Some('p'),
             )
             .switch("reverse", "print dates in reverse", Some('r'))
             .category(Category::Generators)
@@ -61,25 +65,27 @@ impl Command for SeqDate {
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "print the next 10 days in YYYY-MM-DD format with newline separator",
+                description: "Return a list of the next 10 days in the YYYY-MM-DD format",
                 example: "seq date --days 10",
                 result: None,
             },
             Example {
-                description: "print the previous 10 days in YYYY-MM-DD format with newline separator",
+                description: "Return the previous 10 days in the YYYY-MM-DD format",
                 example: "seq date --days 10 --reverse",
                 result: None,
             },
             Example {
-                description: "print the previous 10 days starting today in MM/DD/YYYY format with newline separator",
+                description:
+                    "Return the previous 10 days, starting today, in the MM/DD/YYYY format",
                 example: "seq date --days 10 -o '%m/%d/%Y' --reverse",
                 result: None,
             },
             Example {
-                description: "print the first 10 days in January, 2020",
-                example: "seq date --begin-date '2020-01-01' --end-date '2020-01-10'",
+                description: "Return the first 10 days in January, 2020",
+                example:
+                    "seq date --begin-date '2020-01-01' --end-date '2020-01-10' --increment 1day",
                 result: Some(Value::list(
-                     vec![
+                    vec![
                         Value::test_string("2020-01-01"),
                         Value::test_string("2020-01-02"),
                         Value::test_string("2020-01-03"),
@@ -91,23 +97,95 @@ impl Command for SeqDate {
                         Value::test_string("2020-01-09"),
                         Value::test_string("2020-01-10"),
                     ],
-                     Span::test_data(),
+                    Span::test_data(),
+                )),
+            },
+            Example {
+                description: "Return the first 10 days in January, 2020 using --days flag",
+                example:
+                    "seq date --begin-date '2020-01-01' --days 10 --increment 1day",
+                result: Some(Value::list(
+                    vec![
+                        Value::test_string("2020-01-01"),
+                        Value::test_string("2020-01-02"),
+                        Value::test_string("2020-01-03"),
+                        Value::test_string("2020-01-04"),
+                        Value::test_string("2020-01-05"),
+                        Value::test_string("2020-01-06"),
+                        Value::test_string("2020-01-07"),
+                        Value::test_string("2020-01-08"),
+                        Value::test_string("2020-01-09"),
+                        Value::test_string("2020-01-10"),
+                    ],
+                    Span::test_data(),
+                )),
+            },
+            Example {
+                description: "Return the first five 5-minute periods starting January 1, 2020",
+                example:
+                    "seq date --begin-date '2020-01-01' --periods 5 --increment 5min --output-format '%Y-%m-%d %H:%M:%S'",
+                result: Some(Value::list(
+                    vec![
+                        Value::test_string("2020-01-01 00:00:00"),
+                        Value::test_string("2020-01-01 00:05:00"),
+                        Value::test_string("2020-01-01 00:10:00"),
+                        Value::test_string("2020-01-01 00:15:00"),
+                        Value::test_string("2020-01-01 00:20:00"),
+                    ],
+                    Span::test_data(),
                 )),
             },
             Example {
                 description: "print every fifth day between January 1st 2020 and January 31st 2020",
-                example: "seq date --begin-date '2020-01-01' --end-date '2020-01-31' --increment 5",
+                example:
+                    "seq date --begin-date '2020-01-01' --end-date '2020-01-31' --increment 5day",
                 result: Some(Value::list(
                     vec![
-                    Value::test_string("2020-01-01"),
-                    Value::test_string("2020-01-06"),
-                    Value::test_string("2020-01-11"),
-                    Value::test_string("2020-01-16"),
-                    Value::test_string("2020-01-21"),
-                    Value::test_string("2020-01-26"),
-                    Value::test_string("2020-01-31"),
+                        Value::test_string("2020-01-01"),
+                        Value::test_string("2020-01-06"),
+                        Value::test_string("2020-01-11"),
+                        Value::test_string("2020-01-16"),
+                        Value::test_string("2020-01-21"),
+                        Value::test_string("2020-01-26"),
+                        Value::test_string("2020-01-31"),
                     ],
-                     Span::test_data(),
+                    Span::test_data(),
+                )),
+            },
+            Example {
+                description: "increment defaults to days if no duration is supplied",
+                example:
+                    "seq date --begin-date '2020-01-01' --end-date '2020-01-31' --increment 5",
+                result: Some(Value::list(
+                    vec![
+                        Value::test_string("2020-01-01"),
+                        Value::test_string("2020-01-06"),
+                        Value::test_string("2020-01-11"),
+                        Value::test_string("2020-01-16"),
+                        Value::test_string("2020-01-21"),
+                        Value::test_string("2020-01-26"),
+                        Value::test_string("2020-01-31"),
+                    ],
+                    Span::test_data(),
+                )),
+            },
+            Example {
+                description: "print every six hours starting January 1st, 2020 until January 3rd, 2020",
+                example:
+                    "seq date --begin-date '2020-01-01' --end-date '2020-01-03' --increment 6hr --output-format '%Y-%m-%d %H:%M:%S'",
+                result: Some(Value::list(
+                    vec![
+                        Value::test_string("2020-01-01 00:00:00"),
+                        Value::test_string("2020-01-01 06:00:00"),
+                        Value::test_string("2020-01-01 12:00:00"),
+                        Value::test_string("2020-01-01 18:00:00"),
+                        Value::test_string("2020-01-02 00:00:00"),
+                        Value::test_string("2020-01-02 06:00:00"),
+                        Value::test_string("2020-01-02 12:00:00"),
+                        Value::test_string("2020-01-02 18:00:00"),
+                        Value::test_string("2020-01-03 00:00:00"),
+                    ],
+                    Span::test_data(),
                 )),
             },
         ]
@@ -127,16 +205,36 @@ impl Command for SeqDate {
         let begin_date: Option<Spanned<String>> =
             call.get_flag(engine_state, stack, "begin-date")?;
         let end_date: Option<Spanned<String>> = call.get_flag(engine_state, stack, "end-date")?;
-        let increment: Option<Spanned<i64>> = call.get_flag(engine_state, stack, "increment")?;
+
+        let increment = match call.get_flag::<Value>(engine_state, stack, "increment")? {
+            Some(increment) => match increment {
+                Value::Int { val, internal_span } => Some(
+                    val.checked_mul(NANOSECONDS_IN_DAY)
+                        .ok_or_else(|| ShellError::GenericError {
+                            error: "increment is too large".into(),
+                            msg: "increment is too large".into(),
+                            span: Some(internal_span),
+                            help: None,
+                            inner: vec![],
+                        })?
+                        .into_spanned(internal_span),
+                ),
+                Value::Duration { val, internal_span } => Some(val.into_spanned(internal_span)),
+                _ => None,
+            },
+            None => None,
+        };
+
         let days: Option<Spanned<i64>> = call.get_flag(engine_state, stack, "days")?;
+        let periods: Option<Spanned<i64>> = call.get_flag(engine_state, stack, "periods")?;
         let reverse = call.has_flag(engine_state, stack, "reverse")?;
 
-        let outformat = match output_format {
+        let out_format = match output_format {
             Some(s) => Some(Value::string(s.item, s.span)),
             _ => None,
         };
 
-        let informat = match input_format {
+        let in_format = match input_format {
             Some(s) => Some(Value::string(s.item, s.span)),
             _ => None,
         };
@@ -153,10 +251,12 @@ impl Command for SeqDate {
 
         let inc = match increment {
             Some(i) => Value::int(i.item, i.span),
-            _ => Value::int(1_i64, call.head),
+            _ => Value::int(NANOSECONDS_IN_DAY, call.head),
         };
 
         let day_count = days.map(|i| Value::int(i.item, i.span));
+
+        let period_count = periods.map(|i| Value::int(i.item, i.span));
 
         let mut rev = false;
         if reverse {
@@ -164,18 +264,28 @@ impl Command for SeqDate {
         }
 
         Ok(run_seq_dates(
-            outformat, informat, begin, end, inc, day_count, rev, call.head,
+            out_format,
+            in_format,
+            begin,
+            end,
+            inc,
+            day_count,
+            period_count,
+            rev,
+            call.head,
         )?
         .into_pipeline_data())
     }
 }
 
-pub fn parse_date_string(s: &str, format: &str) -> Result<NaiveDate, &'static str> {
-    let d = match NaiveDate::parse_from_str(s, format) {
-        Ok(d) => d,
-        Err(_) => return Err("Failed to parse date."),
-    };
-    Ok(d)
+#[allow(clippy::unnecessary_lazy_evaluations)]
+pub fn parse_date_string(s: &str, format: &str) -> Result<NaiveDateTime, &'static str> {
+    NaiveDateTime::parse_from_str(s, format).or_else(|_| {
+        // If parsing as DateTime fails, try parsing as Date before throwing error
+        let date = NaiveDate::parse_from_str(s, format).map_err(|_| "Failed to parse date.")?;
+        date.and_hms_opt(0, 0, 0)
+            .ok_or_else(|| "Failed to convert NaiveDate to NaiveDateTime.")
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -186,25 +296,27 @@ pub fn run_seq_dates(
     ending_date: Option<String>,
     increment: Value,
     day_count: Option<Value>,
+    period_count: Option<Value>,
     reverse: bool,
     call_span: Span,
 ) -> Result<Value, ShellError> {
-    let today = Local::now().date_naive();
+    let today = Local::now().naive_local();
     // if cannot convert , it will return error
-    let mut step_size: i64 = increment.as_i64()?;
+    let increment_span = increment.span();
+    let mut step_size: i64 = i64::from_value(increment)?;
 
     if step_size == 0 {
         return Err(ShellError::GenericError {
             error: "increment cannot be 0".into(),
             msg: "increment cannot be 0".into(),
-            span: Some(increment.span()),
+            span: Some(increment_span),
             help: None,
             inner: vec![],
         });
     }
 
     let in_format = match input_format {
-        Some(i) => match i.as_string() {
+        Some(i) => match i.coerce_into_string() {
             Ok(v) => v,
             Err(e) => {
                 return Err(ShellError::GenericError {
@@ -220,7 +332,7 @@ pub fn run_seq_dates(
     };
 
     let out_format = match output_format {
-        Some(i) => match i.as_string() {
+        Some(o) => match o.coerce_into_string() {
             Ok(v) => v,
             Err(e) => {
                 return Err(ShellError::GenericError {
@@ -268,7 +380,12 @@ pub fn run_seq_dates(
     };
 
     let mut days_to_output = match day_count {
-        Some(d) => d.as_i64()?,
+        Some(d) => i64::from_value(d)?,
+        None => 0i64,
+    };
+
+    let mut periods_to_output = match period_count {
+        Some(d) => i64::from_value(d)?,
         None => 0i64,
     };
 
@@ -276,21 +393,35 @@ pub fn run_seq_dates(
     if reverse {
         step_size *= -1;
         days_to_output *= -1;
+        periods_to_output *= -1;
     }
 
-    if days_to_output != 0 {
-        end_date = match start_date.checked_add_signed(Duration::days(days_to_output)) {
-            Some(date) => date,
-            None => {
-                return Err(ShellError::GenericError {
-                    error: "int value too large".into(),
-                    msg: "int value too large".into(),
-                    span: Some(call_span),
-                    help: None,
-                    inner: vec![],
-                });
-            }
-        }
+    // --days is ignored when --periods is set
+    if periods_to_output != 0 {
+        end_date = periods_to_output
+            .checked_sub(1)
+            .and_then(|val| val.checked_mul(step_size.abs()))
+            .map(Duration::nanoseconds)
+            .and_then(|inc| start_date.checked_add_signed(inc))
+            .ok_or_else(|| ShellError::GenericError {
+                error: "incrementing by the number of periods is too large".into(),
+                msg: "incrementing by the number of periods is too large".into(),
+                span: Some(call_span),
+                help: None,
+                inner: vec![],
+            })?;
+    } else if days_to_output != 0 {
+        end_date = days_to_output
+            .checked_sub(1)
+            .and_then(Duration::try_days)
+            .and_then(|days| start_date.checked_add_signed(days))
+            .ok_or_else(|| ShellError::GenericError {
+                error: "int value too large".into(),
+                msg: "int value too large".into(),
+                span: Some(call_span),
+                help: None,
+                inner: vec![],
+            })?;
     }
 
     // conceptually counting down with a positive step or counting up with a negative step
@@ -301,6 +432,9 @@ pub fn run_seq_dates(
 
     let is_out_of_range =
         |next| (step_size > 0 && next > end_date) || (step_size < 0 && next < end_date);
+
+    // Bounds are enforced by i64 conversion above
+    let step_size = Duration::nanoseconds(step_size);
 
     let mut next = start_date;
     if is_out_of_range(next) {
@@ -315,9 +449,31 @@ pub fn run_seq_dates(
 
     let mut ret = vec![];
     loop {
-        let date_string = &next.format(&out_format).to_string();
+        let mut date_string = String::new();
+        match write!(date_string, "{}", next.format(&out_format)) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(ShellError::GenericError {
+                    error: "Invalid output format".into(),
+                    msg: e.to_string(),
+                    span: Some(call_span),
+                    help: None,
+                    inner: vec![],
+                });
+            }
+        }
         ret.push(Value::string(date_string, call_span));
-        next += Duration::days(step_size);
+        if let Some(n) = next.checked_add_signed(step_size) {
+            next = n;
+        } else {
+            return Err(ShellError::GenericError {
+                error: "date overflow".into(),
+                msg: "adding the increment overflowed".into(),
+                span: Some(call_span),
+                help: None,
+                inner: vec![],
+            });
+        }
 
         if is_out_of_range(next) {
             break;

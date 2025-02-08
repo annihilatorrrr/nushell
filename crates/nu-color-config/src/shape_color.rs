@@ -3,9 +3,8 @@ use nu_ansi_term::{Color, Style};
 use nu_protocol::{Config, Value};
 
 // The default colors for shapes, used when there is no config for them.
-pub fn default_shape_color(shape: String) -> Style {
-    match shape.as_ref() {
-        "shape_and" => Style::new().fg(Color::Purple).bold(),
+pub fn default_shape_color(shape: &str) -> Style {
+    match shape {
         "shape_binary" => Style::new().fg(Color::Purple).bold(),
         "shape_block" => Style::new().fg(Color::Blue).bold(),
         "shape_bool" => Style::new().fg(Color::LightCyan),
@@ -20,6 +19,7 @@ pub fn default_shape_color(shape: String) -> Style {
         "shape_flag" => Style::new().fg(Color::Blue).bold(),
         "shape_float" => Style::new().fg(Color::Purple).bold(),
         "shape_garbage" => Style::new().fg(Color::White).on(Color::Red).bold(),
+        "shape_glob_interpolation" => Style::new().fg(Color::Cyan).bold(),
         "shape_globpattern" => Style::new().fg(Color::Cyan).bold(),
         "shape_int" => Style::new().fg(Color::Purple).bold(),
         "shape_internalcall" => Style::new().fg(Color::Cyan).bold(),
@@ -29,9 +29,9 @@ pub fn default_shape_color(shape: String) -> Style {
         "shape_match_pattern" => Style::new().fg(Color::Green),
         "shape_nothing" => Style::new().fg(Color::LightCyan),
         "shape_operator" => Style::new().fg(Color::Yellow),
-        "shape_or" => Style::new().fg(Color::Purple).bold(),
         "shape_pipe" => Style::new().fg(Color::Purple).bold(),
         "shape_range" => Style::new().fg(Color::Yellow).bold(),
+        "shape_raw_string" => Style::new().fg(Color::LightMagenta).bold(),
         "shape_record" => Style::new().fg(Color::Cyan).bold(),
         "shape_redirection" => Style::new().fg(Color::Purple).bold(),
         "shape_signature" => Style::new().fg(Color::Green).bold(),
@@ -44,8 +44,8 @@ pub fn default_shape_color(shape: String) -> Style {
     }
 }
 
-pub fn get_shape_color(shape: String, conf: &Config) -> Style {
-    match conf.color_config.get(shape.as_str()) {
+pub fn get_shape_color(shape: &str, conf: &Config) -> Style {
+    match conf.color_config.get(shape) {
         Some(int_color) => {
             // Shapes do not use color_config closures, currently.
             match int_color {

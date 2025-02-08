@@ -60,15 +60,14 @@ impl Director {
             process.cwd(working_directory);
         }
 
-        process.arg("--skip-plugins");
         process.arg("--no-history");
         if let Some(config_file) = self.config.as_ref() {
             process.args(&[
-                "--config-file",
+                "--config",
                 config_file.to_str().expect("failed to convert."),
             ]);
         }
-        process.arg("--perf");
+        process.args(&["--log-level", "info"]);
 
         director.executable = Some(process);
         director
@@ -84,7 +83,7 @@ impl Director {
 }
 
 impl Executable for Director {
-    fn execute(&mut self) -> NuResult {
+    fn execute(&mut self) -> Result<Outcome, NuError> {
         use std::process::Stdio;
 
         match self.executable() {

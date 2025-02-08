@@ -5,12 +5,15 @@ repository = "https://github.com/nushell/nushell/tree/main/crates/nu-term-grid"
 edition = "2021"
 license = "MIT"
 name = "nu-term-grid"
-version = "0.89.1"
+version = "0.102.1"
 
 [lib]
 bench = false
 
-[dependencies]
-nu-utils = { path = "../nu-utils", version = "0.89.1" }
+[lints]
+workspace = true
 
-unicode-width = "0.1"
+[dependencies]
+nu-utils = { path = "../nu-utils", version = "0.102.1", default-features = false }
+
+unicode-width = { workspace = true }

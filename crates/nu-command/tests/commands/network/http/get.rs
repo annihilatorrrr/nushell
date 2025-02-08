@@ -1,3 +1,5 @@
+use std::{thread, time::Duration};
+
 use mockito::Server;
 use nu_test_support::{nu, pipeline};
 
@@ -243,27 +245,95 @@ fn http_get_redirect_mode_error() {
 
 // These tests require network access; they use badssl.com which is a Google-affiliated site for testing various SSL errors.
 // Revisit this if these tests prove to be flaky or unstable.
+//
+// These tests are flaky and cause CI to fail somewhat regularly. See PR #12010.
 
 #[test]
+#[ignore = "unreliable test"]
 fn http_get_expired_cert_fails() {
     let actual = nu!("http get https://expired.badssl.com/");
     assert!(actual.err.contains("network_failure"));
 }
 
 #[test]
+#[ignore = "unreliable test"]
 fn http_get_expired_cert_override() {
     let actual = nu!("http get --insecure https://expired.badssl.com/");
     assert!(actual.out.contains("<html>"));
 }
 
 #[test]
+#[ignore = "unreliable test"]
 fn http_get_self_signed_fails() {
     let actual = nu!("http get https://self-signed.badssl.com/");
     assert!(actual.err.contains("network_failure"));
 }
 
 #[test]
+#[ignore = "unreliable test"]
 fn http_get_self_signed_override() {
     let actual = nu!("http get --insecure https://self-signed.badssl.com/");
     assert!(actual.out.contains("<html>"));
+}
+
+#[test]
+fn http_get_with_invalid_mime_type() {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/foo.nuon")
+        .with_status(200)
+        // `what&ever` is not a parseable MIME type
+        .with_header("content-type", "what&ever")
+        .with_body("[1 2 3]")
+        .create();
+
+    // but `from nuon` is a known command in nu, so we take `foo.{ext}` and pass it to `from {ext}`
+    let actual = nu!(pipeline(
+        format!(
+            r#"http get {url}/foo.nuon | to json --raw"#,
+            url = server.url()
+        )
+        .as_str()
+    ));
+
+    assert_eq!(actual.out, "[1,2,3]");
+}
+
+#[test]
+fn http_get_with_unknown_mime_type() {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(200)
+        // `application/nuon` is not an IANA-registered MIME type
+        .with_header("content-type", "application/nuon")
+        .with_body("[1 2 3]")
+        .create();
+
+    // but `from nuon` is a known command in nu, so we take `{garbage}/{whatever}` and pass it to `from {whatever}`
+    let actual = nu!(pipeline(
+        format!(r#"http get {url}/foo | to json --raw"#, url = server.url()).as_str()
+    ));
+
+    assert_eq!(actual.out, "[1,2,3]");
+}
+
+#[test]
+fn http_get_timeout() {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_chunked_body(|w| {
+            thread::sleep(Duration::from_secs(10));
+            w.write_all(b"Delayed response!")
+        })
+        .create();
+
+    let actual = nu!(pipeline(
+        format!("http get --max-time 100ms {url}", url = server.url()).as_str()
+    ));
+
+    assert!(&actual.err.contains("nu::shell::io::timed_out"));
+    assert!(&actual.err.contains("Timed out"));
 }

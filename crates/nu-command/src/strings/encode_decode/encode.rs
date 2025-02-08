@@ -1,10 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Spanned,
-    SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Encode;
@@ -14,7 +8,7 @@ impl Command for Encode {
         "encode"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         // Note: "Encode a UTF-8 string into other forms" is semantically incorrect because
         // Nushell strings, as abstract values, have no user-facing encoding.
         // (Remember that "encoding" exclusively means "how the characters are
@@ -38,11 +32,12 @@ impl Command for Encode {
             .category(Category::Strings)
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"Multiple encodings are supported; here are a few:
 big5, euc-jp, euc-kr, gbk, iso-8859-1, cp1252, latin5
 
 Note that since the Encoding Standard doesn't specify encoders for utf-16le and utf-16be, these are not yet supported.
+More information can be found here: https://docs.rs/encoding_rs/latest/encoding_rs/#utf-16le-utf-16be-and-unicode-encoding-schemes
 
 For a more complete list of encodings, please refer to the encoding_rs
 documentation link at https://docs.rs/encoding_rs/latest/encoding_rs/#statics"#
@@ -74,6 +69,10 @@ documentation link at https://docs.rs/encoding_rs/latest/encoding_rs/#statics"#
         ]
     }
 
+    fn is_const(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -81,45 +80,62 @@ documentation link at https://docs.rs/encoding_rs/latest/encoding_rs/#statics"#
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let head = call.head;
         let encoding: Spanned<String> = call.req(engine_state, stack, 0)?;
         let ignore_errors = call.has_flag(engine_state, stack, "ignore-errors")?;
+        run(call, input, encoding, ignore_errors)
+    }
 
-        match input {
-            PipelineData::ExternalStream { stdout: None, .. } => Ok(PipelineData::empty()),
-            PipelineData::ExternalStream {
-                stdout: Some(stream),
-                ..
-            } => {
-                let s = stream.into_string()?;
-                super::encoding::encode(head, encoding, &s.item, s.span, ignore_errors)
-                    .map(|val| val.into_pipeline_data())
-            }
-            PipelineData::Value(v, ..) => {
-                let span = v.span();
-                match v {
-                    Value::String { val: s, .. } => {
-                        super::encoding::encode(head, encoding, &s, span, ignore_errors)
-                            .map(|val| val.into_pipeline_data())
-                    }
-                    Value::Error { error, .. } => Err(*error),
-                    _ => Err(ShellError::OnlySupportsThisInputType {
-                        exp_input_type: "string".into(),
-                        wrong_type: v.get_type().to_string(),
-                        dst_span: head,
-                        src_span: v.span(),
-                    }),
-                }
-            }
-            // This should be more precise, but due to difficulties in getting spans
-            // from PipelineData::ListStream, this is as it is.
-            _ => Err(ShellError::UnsupportedInput {
-                msg: "non-string input".into(),
-                input: "value originates from here".into(),
-                msg_span: head,
-                input_span: input.span().unwrap_or(head),
-            }),
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let encoding: Spanned<String> = call.req_const(working_set, 0)?;
+        let ignore_errors = call.has_flag_const(working_set, "ignore-errors")?;
+        run(call, input, encoding, ignore_errors)
+    }
+}
+
+fn run(
+    call: &Call,
+    input: PipelineData,
+    encoding: Spanned<String>,
+    ignore_errors: bool,
+) -> Result<PipelineData, ShellError> {
+    let head = call.head;
+
+    match input {
+        PipelineData::ByteStream(stream, ..) => {
+            let span = stream.span();
+            let s = stream.into_string()?;
+            super::encoding::encode(head, encoding, &s, span, ignore_errors)
+                .map(|val| val.into_pipeline_data())
         }
+        PipelineData::Value(v, ..) => {
+            let span = v.span();
+            match v {
+                Value::String { val: s, .. } => {
+                    super::encoding::encode(head, encoding, &s, span, ignore_errors)
+                        .map(|val| val.into_pipeline_data())
+                }
+                Value::Error { error, .. } => Err(*error),
+                _ => Err(ShellError::OnlySupportsThisInputType {
+                    exp_input_type: "string".into(),
+                    wrong_type: v.get_type().to_string(),
+                    dst_span: head,
+                    src_span: v.span(),
+                }),
+            }
+        }
+        // This should be more precise, but due to difficulties in getting spans
+        // from PipelineData::ListStream, this is as it is.
+        _ => Err(ShellError::UnsupportedInput {
+            msg: "non-string input".into(),
+            input: "value originates from here".into(),
+            msg_span: head,
+            input_span: input.span().unwrap_or(head),
+        }),
     }
 }
 

@@ -1,12 +1,8 @@
 use chrono::{Datelike, Local, NaiveDate};
-use indexmap::IndexMap;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Spanned,
-    SyntaxShape, Type, Value,
-};
+use nu_color_config::StyleComputer;
+use nu_engine::command_prelude::*;
+use nu_protocol::ast::{self, Expr, Expression};
+
 use std::collections::VecDeque;
 
 #[derive(Clone)]
@@ -19,6 +15,7 @@ struct Arguments {
     month_names: bool,
     full_year: Option<Spanned<i64>>,
     week_start: Option<Spanned<String>>,
+    as_table: bool,
 }
 
 impl Command for Cal {
@@ -31,6 +28,7 @@ impl Command for Cal {
             .switch("year", "Display the year column", Some('y'))
             .switch("quarter", "Display the quarter column", Some('q'))
             .switch("month", "Display the month column", Some('m'))
+            .switch("as-table", "output as a table", Some('t'))
             .named(
                 "full-year",
                 SyntaxShape::Int,
@@ -48,12 +46,15 @@ impl Command for Cal {
                 "Display the month names instead of integers",
                 None,
             )
-            .input_output_types(vec![(Type::Nothing, Type::Table(vec![]))])
+            .input_output_types(vec![
+                (Type::Nothing, Type::table()),
+                (Type::Nothing, Type::String),
+            ])
             .allow_variants_without_examples(true) // TODO: supply exhaustive examples
             .category(Category::Generators)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Display a calendar."
     }
 
@@ -80,8 +81,13 @@ impl Command for Cal {
                 result: None,
             },
             Example {
-                description: "This month's calendar with the week starting on monday",
-                example: "cal --week-start monday",
+                description: "This month's calendar with the week starting on Monday",
+                example: "cal --week-start mo",
+                result: None,
+            },
+            Example {
+                description: "How many 'Friday the Thirteenths' occurred in 2015?",
+                example: "cal --as-table --full-year 2015 | where fr == 13 | length",
                 result: None,
             },
         ]
@@ -92,7 +98,6 @@ pub fn cal(
     engine_state: &EngineState,
     stack: &mut Stack,
     call: &Call,
-    // TODO: Error if a value is piped in
     _input: PipelineData,
 ) -> Result<PipelineData, ShellError> {
     let mut calendar_vec_deque = VecDeque::new();
@@ -107,7 +112,10 @@ pub fn cal(
         quarter: call.has_flag(engine_state, stack, "quarter")?,
         full_year: call.get_flag(engine_state, stack, "full-year")?,
         week_start: call.get_flag(engine_state, stack, "week-start")?,
+        as_table: call.has_flag(engine_state, stack, "as-table")?,
     };
+
+    let style_computer = &StyleComputer::from_config(engine_state, stack);
 
     let mut selected_year: i32 = current_year;
     let mut current_day_option: Option<u32> = Some(current_day);
@@ -132,9 +140,35 @@ pub fn cal(
         month_range,
         current_month,
         current_day_option,
+        style_computer,
     )?;
 
-    Ok(Value::list(calendar_vec_deque.into_iter().collect(), tag).into_pipeline_data())
+    let mut table_no_index = ast::Call::new(Span::unknown());
+    table_no_index.add_named((
+        Spanned {
+            item: "index".to_string(),
+            span: Span::unknown(),
+        },
+        None,
+        Some(Expression::new_unknown(
+            Expr::Bool(false),
+            Span::unknown(),
+            Type::Bool,
+        )),
+    ));
+
+    let cal_table_output =
+        Value::list(calendar_vec_deque.into_iter().collect(), tag).into_pipeline_data();
+    if !arguments.as_table {
+        crate::Table.run(
+            engine_state,
+            stack,
+            &(&table_no_index).into(),
+            cal_table_output,
+        )
+    } else {
+        Ok(cal_table_output)
+    }
 }
 
 fn get_invalid_year_shell_error(head: Span) -> ShellError {
@@ -200,6 +234,7 @@ fn get_current_date() -> (i32, u32, u32) {
     (current_year, current_month, current_day)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_months_of_year_to_table(
     arguments: &Arguments,
     calendar_vec_deque: &mut VecDeque<Value>,
@@ -208,6 +243,7 @@ fn add_months_of_year_to_table(
     (start_month, end_month): (u32, u32),
     current_month: u32,
     current_day_option: Option<u32>,
+    style_computer: &StyleComputer,
 ) -> Result<(), ShellError> {
     for month_number in start_month..=end_month {
         let mut new_current_day_option: Option<u32> = None;
@@ -225,6 +261,7 @@ fn add_months_of_year_to_table(
             selected_year,
             month_number,
             new_current_day_option,
+            style_computer,
         );
 
         add_month_to_table_result?
@@ -240,6 +277,7 @@ fn add_month_to_table(
     selected_year: i32,
     current_month: u32,
     current_day_option: Option<u32>,
+    style_computer: &StyleComputer,
 ) -> Result<(), ShellError> {
     let month_helper_result = MonthHelper::new(selected_year, current_month);
 
@@ -258,40 +296,24 @@ fn add_month_to_table(
         },
     };
 
-    let mut days_of_the_week = [
-        "sunday",
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-    ];
+    let mut days_of_the_week = ["su", "mo", "tu", "we", "th", "fr", "sa"];
+    let mut total_start_offset: u32 = month_helper.day_number_of_week_month_starts_on;
 
-    let mut week_start_day = days_of_the_week[0].to_string();
-    if let Some(day) = &arguments.week_start {
-        let s = &day.item;
-        if days_of_the_week.contains(&s.as_str()) {
-            week_start_day = s.to_string();
+    if let Some(week_start_day) = &arguments.week_start {
+        if let Some(position) = days_of_the_week
+            .iter()
+            .position(|day| *day == week_start_day.item)
+        {
+            days_of_the_week.rotate_left(position);
+            total_start_offset += (days_of_the_week.len() - position) as u32;
+            total_start_offset %= days_of_the_week.len() as u32;
         } else {
             return Err(ShellError::TypeMismatch {
-                err_message: "The specified week start day is invalid".to_string(),
-                span: day.span,
+                err_message: "The specified week start day is invalid, expected one of ['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa']".to_string(),
+                span: week_start_day.span,
             });
         }
-    }
-
-    let week_start_day_offset = days_of_the_week.len()
-        - days_of_the_week
-            .iter()
-            .position(|day| *day == week_start_day)
-            .unwrap_or(0);
-
-    days_of_the_week.rotate_right(week_start_day_offset);
-
-    let mut total_start_offset: u32 =
-        month_helper.day_number_of_week_month_starts_on + week_start_day_offset as u32;
-    total_start_offset %= days_of_the_week.len() as u32;
+    };
 
     let mut day_number: u32 = 1;
     let day_limit: u32 = total_start_offset + month_helper.number_of_days_in_month;
@@ -302,17 +324,17 @@ fn add_month_to_table(
     let should_show_month_names = arguments.month_names;
 
     while day_number <= day_limit {
-        let mut indexmap = IndexMap::new();
+        let mut record = Record::new();
 
         if should_show_year_column {
-            indexmap.insert(
+            record.insert(
                 "year".to_string(),
                 Value::int(month_helper.selected_year as i64, tag),
             );
         }
 
         if should_show_quarter_column {
-            indexmap.insert(
+            record.insert(
                 "quarter".to_string(),
                 Value::int(month_helper.quarter_number as i64, tag),
             );
@@ -325,7 +347,7 @@ fn add_month_to_table(
                 Value::int(month_helper.selected_month as i64, tag)
             };
 
-            indexmap.insert("month".to_string(), month_value);
+            record.insert("month".to_string(), month_value);
         }
 
         for day in &days_of_the_week {
@@ -341,18 +363,26 @@ fn add_month_to_table(
 
                 if let Some(current_day) = current_day_option {
                     if current_day == adjusted_day_number {
-                        // TODO: Update the value here with a color when color support is added
                         // This colors the current day
+                        let header_style =
+                            style_computer.compute("header", &Value::nothing(Span::unknown()));
+
+                        value = Value::string(
+                            header_style
+                                .paint(adjusted_day_number.to_string())
+                                .to_string(),
+                            tag,
+                        );
                     }
                 }
             }
 
-            indexmap.insert((*day).to_string(), value);
+            record.insert((*day).to_string(), value);
 
             day_number += 1;
         }
 
-        calendar_vec_deque.push_back(Value::record(indexmap.into_iter().collect(), tag))
+        calendar_vec_deque.push_back(Value::record(record, tag))
     }
 
     Ok(())

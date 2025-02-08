@@ -1,21 +1,20 @@
-use nu_plugin::LabeledError;
-use nu_protocol::{ast::CellPath, Span, Value};
+use nu_protocol::{ast::CellPath, LabeledError, Span, Value};
 use semver::{BuildMetadata, Prerelease, Version};
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum Action {
     SemVerAction(SemVerAction),
     Default,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SemVerAction {
     Major,
     Minor,
     Patch,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Inc {
     pub error: Option<String>,
     pub cell_path: Option<CellPath>,
@@ -90,10 +89,6 @@ impl Inc {
         self.error = Some(message.to_string());
     }
 
-    pub fn usage() -> &'static str {
-        "Usage: inc field [--major|--minor|--patch]"
-    }
-
     pub fn inc(&self, head: Span, value: &Value) -> Result<Value, LabeledError> {
         if let Some(cell_path) = &self.cell_path {
             let working_value = value.clone();
@@ -102,12 +97,7 @@ impl Inc {
             let cell_value = self.inc_value(head, &cell_value)?;
 
             let mut value = value.clone();
-            value
-                .update_data_at_cell_path(&cell_path.members, cell_value)
-                .map_err(|x| {
-                    let error: LabeledError = x.into();
-                    error
-                })?;
+            value.update_data_at_cell_path(&cell_path.members, cell_value)?;
             Ok(value)
         } else {
             self.inc_value(head, value)
@@ -119,17 +109,14 @@ impl Inc {
             Value::Int { val, .. } => Ok(Value::int(val + 1, head)),
             Value::String { val, .. } => Ok(self.apply(val, head)),
             x => {
-                let msg = x.as_string().map_err(|e| LabeledError {
-                    label: "Unable to extract string".into(),
-                    msg: format!("value cannot be converted to string {x:?} - {e}"),
-                    span: Some(head),
+                let msg = x.coerce_string().map_err(|e| {
+                    LabeledError::new("Unable to extract string").with_label(
+                        format!("value cannot be converted to string {x:?} - {e}"),
+                        head,
+                    )
                 })?;
 
-                Err(LabeledError {
-                    label: "Incorrect value".into(),
-                    msg,
-                    span: Some(head),
-                })
+                Err(LabeledError::new("Incorrect value").with_label(msg, head))
             }
         }
     }

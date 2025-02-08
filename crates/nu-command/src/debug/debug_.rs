@@ -1,7 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Debug;
@@ -11,7 +8,7 @@ impl Command for Debug {
         "debug"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Debug print the value(s) piped in."
     }
 
@@ -22,7 +19,6 @@ impl Command for Debug {
                     Type::List(Box::new(Type::Any)),
                     Type::List(Box::new(Type::String)),
                 ),
-                (Type::Table(vec![]), Type::List(Box::new(Type::String))),
                 (Type::Any, Type::String),
             ])
             .category(Category::Debug)
@@ -37,7 +33,7 @@ impl Command for Debug {
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let head = call.head;
-        let config = engine_state.get_config().clone();
+        let config = stack.get_config(engine_state);
         let raw = call.has_flag(engine_state, stack, "raw")?;
 
         // Should PipelineData::Empty result in an error here?
@@ -45,12 +41,12 @@ impl Command for Debug {
         input.map(
             move |x| {
                 if raw {
-                    Value::string(x.debug_value(), head)
+                    Value::string(x.to_debug_string(), head)
                 } else {
-                    Value::string(x.debug_string(", ", &config), head)
+                    Value::string(x.to_expanded_string(", ", &config), head)
                 }
             },
-            engine_state.ctrlc.clone(),
+            engine_state.signals(),
         )
     }
 

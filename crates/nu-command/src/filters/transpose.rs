@@ -1,11 +1,4 @@
-use nu_engine::column::get_columns;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, IntoInterruptiblePipelineData, PipelineData, Record, ShellError,
-    Signature, Spanned, SyntaxShape, Type, Value,
-};
+use nu_engine::{column::get_columns, command_prelude::*};
 
 #[derive(Clone)]
 pub struct Transpose;
@@ -27,12 +20,12 @@ impl Command for Transpose {
     fn signature(&self) -> Signature {
         Signature::build("transpose")
             .input_output_types(vec![
-                (Type::Table(vec![]), Type::Any),
-                (Type::Record(vec![]), Type::Table(vec![])),
+                (Type::table(), Type::Any),
+                (Type::record(), Type::table()),
             ])
             .switch(
                 "header-row",
-                "treat the first row as column names",
+                "use the first input column as the table header-row (or keynames when combined with --as-record)",
                 Some('r'),
             )
             .switch(
@@ -64,7 +57,7 @@ impl Command for Transpose {
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Transposes the table contents so rows become columns and columns become rows."
     }
 
@@ -156,33 +149,38 @@ pub fn transpose(
     if !args.rest.is_empty() && args.header_row {
         return Err(ShellError::IncompatibleParametersSingle {
             msg: "Can not provide header names and use `--header-row`".into(),
-            span: call.get_named_arg("header-row").expect("has flag").span,
+            span: call.get_flag_span(stack, "header-row").expect("has flag"),
         });
     }
     if !args.header_row && args.keep_all {
         return Err(ShellError::IncompatibleParametersSingle {
             msg: "Can only be used with `--header-row`(`-r`)".into(),
-            span: call.get_named_arg("keep-all").expect("has flag").span,
+            span: call.get_flag_span(stack, "keep-all").expect("has flag"),
         });
     }
     if !args.header_row && args.keep_last {
         return Err(ShellError::IncompatibleParametersSingle {
             msg: "Can only be used with `--header-row`(`-r`)".into(),
-            span: call.get_named_arg("keep-last").expect("has flag").span,
+            span: call.get_flag_span(stack, "keep-last").expect("has flag"),
         });
     }
     if args.keep_all && args.keep_last {
         return Err(ShellError::IncompatibleParameters {
             left_message: "can't use `--keep-last` at the same time".into(),
-            left_span: call.get_named_arg("keep-last").expect("has flag").span,
+            left_span: call.get_flag_span(stack, "keep-last").expect("has flag"),
             right_message: "because of `--keep-all`".into(),
-            right_span: call.get_named_arg("keep-all").expect("has flag").span,
+            right_span: call.get_flag_span(stack, "keep-all").expect("has flag"),
         });
     }
 
-    let ctrlc = engine_state.ctrlc.clone();
     let metadata = input.metadata();
     let input: Vec<_> = input.into_iter().collect();
+    // Ensure error values are propagated
+    for i in input.iter() {
+        if let Value::Error { .. } = i {
+            return Ok(i.clone().into_pipeline_data_with_metadata(metadata));
+        }
+    }
 
     let descs = get_columns(&input);
 
@@ -193,8 +191,8 @@ pub fn transpose(
             if let Some(desc) = descs.first() {
                 match &i.get_data_by_key(desc) {
                     Some(x) => {
-                        if let Ok(s) = x.as_string() {
-                            headers.push(s.to_string());
+                        if let Ok(s) = x.coerce_string() {
+                            headers.push(s);
                         } else {
                             return Err(ShellError::GenericError {
                                 error: "Header row needs string headers".into(),
@@ -291,7 +289,11 @@ pub fn transpose(
             metadata,
         ))
     } else {
-        Ok(result_data.into_pipeline_data_with_metadata(metadata, ctrlc))
+        Ok(result_data.into_pipeline_data_with_metadata(
+            name,
+            engine_state.signals().clone(),
+            metadata,
+        ))
     }
 }
 

@@ -1,10 +1,8 @@
-use crate::math::reducers::{reducer_for, Reduce};
-use crate::math::utils::run_with_function;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
+use crate::math::{
+    reducers::{reducer_for, Reduce},
+    utils::run_with_function,
 };
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -17,14 +15,19 @@ impl Command for SubCommand {
     fn signature(&self) -> Signature {
         Signature::build("math min")
             .input_output_types(vec![
+                (Type::List(Box::new(Type::Number)), Type::Number),
+                (Type::List(Box::new(Type::Duration)), Type::Duration),
+                (Type::List(Box::new(Type::Filesize)), Type::Filesize),
                 (Type::List(Box::new(Type::Any)), Type::Any),
-                (Type::Table(vec![]), Type::Record(vec![])),
+                (Type::Range, Type::Number),
+                (Type::table(), Type::record()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Finds the minimum within a list of values or tables."
     }
 
@@ -32,10 +35,23 @@ impl Command for SubCommand {
         vec!["minimum", "smallest"]
     }
 
+    fn is_const(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         _engine_state: &EngineState,
         _stack: &mut Stack,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        run_with_function(call, input, minimum)
+    }
+
+    fn run_const(
+        &self,
+        _working_set: &StateWorkingSet,
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {

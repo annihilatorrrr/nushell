@@ -1,10 +1,5 @@
 use nu_cmd_base::input_handler::{operate, CellPathOnlyArgs};
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::ast::CellPath;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::Category;
-use nu_protocol::{Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct BytesLen;
@@ -22,8 +17,8 @@ impl Command for BytesLen {
                     Type::List(Box::new(Type::Binary)),
                     Type::List(Box::new(Type::Int)),
                 ),
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (Type::Record(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::table()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .rest(
@@ -34,7 +29,7 @@ impl Command for BytesLen {
             .category(Category::Bytes)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Output the length of any bytes in the pipeline."
     }
 
@@ -51,7 +46,7 @@ impl Command for BytesLen {
     ) -> Result<PipelineData, ShellError> {
         let cell_paths: Vec<CellPath> = call.rest(engine_state, stack, 1)?;
         let arg = CellPathOnlyArgs::from(cell_paths);
-        operate(length, arg, input, call.head, engine_state.ctrlc.clone())
+        operate(length, arg, input, call.head, engine_state.signals())
     }
 
     fn examples(&self) -> Vec<Example> {

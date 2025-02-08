@@ -1,10 +1,6 @@
 use nu_cmd_base::input_handler::{operate, CmdArgument};
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::{Call, CellPath},
-    engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+
 use print_positions::print_positions;
 
 #[derive(Clone)]
@@ -36,7 +32,7 @@ impl Command for Fill {
         "fill"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Fill and Align."
     }
 
@@ -77,7 +73,7 @@ impl Command for Fill {
     }
 
     fn search_terms(&self) -> Vec<&str> {
-        vec!["display", "render", "format", "pad", "align"]
+        vec!["display", "render", "format", "pad", "align", "repeat"]
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -95,9 +91,9 @@ impl Command for Fill {
                 result: Some(Value::string("────────nushell", Span::test_data())),
             },
             Example {
-                description: "Fill a string on both sides to a width of 15 with the character '─'",
-                example: "'nushell' | fill --alignment m --character '─' --width 15",
-                result: Some(Value::string("────nushell────", Span::test_data())),
+                description: "Fill an empty string with 10 '─' characters",
+                example: "'' | fill --character '─' --width 10",
+                result: Some(Value::string("──────────", Span::test_data())),
             },
             Example {
                 description:
@@ -112,7 +108,7 @@ impl Command for Fill {
             },
             Example {
                 description:
-                    "Fill a filesize on the left side to a width of 5 with the character '0'",
+                    "Fill a filesize on both sides to a width of 10 with the character '0'",
                 example: "1kib | fill --alignment middle --character '0' --width 10",
                 result: Some(Value::string("0001024000", Span::test_data())),
             },
@@ -154,13 +150,9 @@ fn fill(
         FillAlignment::Left
     };
 
-    let width = if let Some(arg) = width_arg { arg } else { 1 };
+    let width = width_arg.unwrap_or(1);
 
-    let character = if let Some(arg) = character_arg {
-        arg
-    } else {
-        " ".to_string()
-    };
+    let character = character_arg.unwrap_or_else(|| " ".to_string());
 
     let arg = Arguments {
         width,
@@ -169,13 +161,13 @@ fn fill(
         cell_paths,
     };
 
-    operate(action, arg, input, call.head, engine_state.ctrlc.clone())
+    operate(action, arg, input, call.head, engine_state.signals())
 }
 
 fn action(input: &Value, args: &Arguments, span: Span) -> Value {
     match input {
         Value::Int { val, .. } => fill_int(*val, args, span),
-        Value::Filesize { val, .. } => fill_int(*val, args, span),
+        Value::Filesize { val, .. } => fill_int(val.get(), args, span),
         Value::Float { val, .. } => fill_float(*val, args, span),
         Value::String { val, .. } => fill_string(val, args, span),
         // Propagate errors by explicitly matching them before the final case.

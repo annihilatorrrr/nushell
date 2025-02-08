@@ -1,9 +1,7 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::{Call, Expr, Expression};
-use nu_protocol::engine::{Command, EngineState, Stack};
+use nu_engine::command_prelude::*;
 use nu_protocol::{
-    record, Category, DataSource, Example, IntoPipelineData, PipelineData, PipelineMetadata,
-    Record, ShellError, Signature, Span, SyntaxShape, Type, Value,
+    ast::{Expr, Expression},
+    DataSource, PipelineMetadata,
 };
 
 #[derive(Clone)]
@@ -14,13 +12,13 @@ impl Command for Metadata {
         "metadata"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Get the metadata for items in the stream."
     }
 
     fn signature(&self) -> nu_protocol::Signature {
         Signature::build("metadata")
-            .input_output_types(vec![(Type::Any, Type::Record(vec![]))])
+            .input_output_types(vec![(Type::Any, Type::record())])
             .allow_variants_without_examples(true)
             .optional(
                 "expression",
@@ -30,6 +28,10 @@ impl Command for Metadata {
             .category(Category::Debug)
     }
 
+    fn requires_ast_for_arguments(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -37,7 +39,7 @@ impl Command for Metadata {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let arg = call.positional_nth(0);
+        let arg = call.positional_nth(stack, 0);
         let head = call.head;
 
         match arg {
@@ -82,16 +84,23 @@ impl Command for Metadata {
                     match x {
                         PipelineMetadata {
                             data_source: DataSource::Ls,
+                            ..
                         } => record.push("source", Value::string("ls", head)),
                         PipelineMetadata {
                             data_source: DataSource::HtmlThemes,
+                            ..
                         } => record.push("source", Value::string("into html --list", head)),
                         PipelineMetadata {
                             data_source: DataSource::FilePath(path),
+                            ..
                         } => record.push(
                             "source",
                             Value::string(path.to_string_lossy().to_string(), head),
                         ),
+                        _ => {}
+                    }
+                    if let Some(ref content_type) = x.content_type {
+                        record.push("content_type", Value::string(content_type, head));
                     }
                 }
 
@@ -135,16 +144,23 @@ fn build_metadata_record(arg: &Value, metadata: Option<&PipelineMetadata>, head:
         match x {
             PipelineMetadata {
                 data_source: DataSource::Ls,
+                ..
             } => record.push("source", Value::string("ls", head)),
             PipelineMetadata {
                 data_source: DataSource::HtmlThemes,
+                ..
             } => record.push("source", Value::string("into html --list", head)),
             PipelineMetadata {
                 data_source: DataSource::FilePath(path),
+                ..
             } => record.push(
                 "source",
                 Value::string(path.to_string_lossy().to_string(), head),
             ),
+            _ => {}
+        }
+        if let Some(ref content_type) = x.content_type {
+            record.push("content_type", Value::string(content_type, head));
         }
     }
 

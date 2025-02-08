@@ -4,7 +4,6 @@
 
 use std::fmt::{Display, LowerExp};
 use std::io;
-use std::io::{BufRead, BufReader};
 use std::num::FpCategory;
 
 use super::error::{Error, ErrorCode, Result};
@@ -311,7 +310,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeSeq for Compound<'a, W, F>
+impl<W, F> ser::SerializeSeq for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -319,9 +318,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         self.ser
             .formatter
@@ -338,7 +337,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeTuple for Compound<'a, W, F>
+impl<W, F> ser::SerializeTuple for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -346,9 +345,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         ser::SerializeSeq::serialize_element(self, value)
     }
@@ -358,7 +357,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeTupleStruct for Compound<'a, W, F>
+impl<W, F> ser::SerializeTupleStruct for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -366,9 +365,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         ser::SerializeSeq::serialize_element(self, value)
     }
@@ -378,7 +377,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeTupleVariant for Compound<'a, W, F>
+impl<W, F> ser::SerializeTupleVariant for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -386,9 +385,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         ser::SerializeSeq::serialize_element(self, value)
     }
@@ -402,7 +401,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeMap for Compound<'a, W, F>
+impl<W, F> ser::SerializeMap for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -410,9 +409,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_key<T: ?Sized>(&mut self, key: &T) -> Result<()>
+    fn serialize_key<T>(&mut self, key: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         self.ser
             .formatter
@@ -424,9 +423,9 @@ where
         self.ser.formatter.colon(&mut self.ser.writer)
     }
 
-    fn serialize_value<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_value<T>(&mut self, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         value.serialize(&mut *self.ser)
     }
@@ -439,7 +438,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeStruct for Compound<'a, W, F>
+impl<W, F> ser::SerializeStruct for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -447,9 +446,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_field<T: ?Sized>(&mut self, key: &'static str, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         ser::SerializeMap::serialize_entry(self, key, value)
     }
@@ -459,7 +458,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::SerializeStructVariant for Compound<'a, W, F>
+impl<W, F> ser::SerializeStructVariant for Compound<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -467,9 +466,9 @@ where
     type Ok = ();
     type Error = Error;
 
-    fn serialize_field<T: ?Sized>(&mut self, key: &'static str, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: serde::Serialize + ?Sized,
     {
         ser::SerializeStruct::serialize_field(self, key, value)
     }
@@ -487,7 +486,7 @@ struct MapKeySerializer<'a, W: 'a, F: 'a> {
     ser: &'a mut Serializer<W, F>,
 }
 
-impl<'a, W, F> ser::Serializer for MapKeySerializer<'a, W, F>
+impl<W, F> ser::Serializer for MapKeySerializer<'_, W, F>
 where
     W: io::Write,
     F: Formatter,
@@ -695,7 +694,7 @@ struct HjsonFormatter<'a> {
     braces_same_line: bool,
 }
 
-impl<'a> Default for HjsonFormatter<'a> {
+impl Default for HjsonFormatter<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -715,12 +714,12 @@ impl<'a> HjsonFormatter<'a> {
             stack: Vec::new(),
             at_colon: false,
             indent,
-            braces_same_line: false,
+            braces_same_line: true,
         }
     }
 }
 
-impl<'a> Formatter for HjsonFormatter<'a> {
+impl Formatter for HjsonFormatter<'_> {
     fn open<W>(&mut self, writer: &mut W, ch: u8) -> Result<()>
     where
         W: io::Write,
@@ -1033,21 +1032,9 @@ pub fn to_string_raw<T>(value: &T) -> Result<String>
 where
     T: ser::Serialize,
 {
-    let vec = to_vec(value)?;
-    let string = remove_json_whitespace(vec);
-    Ok(string)
-}
-
-fn remove_json_whitespace(v: Vec<u8>) -> String {
-    let reader = BufReader::new(&v[..]);
-    let mut output = String::new();
-    for line in reader.lines() {
-        match line {
-            Ok(line) => output.push_str(line.trim().trim_end()),
-            _ => {
-                eprintln!("Error removing JSON whitespace");
-            }
-        }
+    let result = serde_json::to_string(value);
+    match result {
+        Ok(result_string) => Ok(result_string),
+        Err(error) => Err(Error::Io(std::io::Error::from(error))),
     }
-    output
 }

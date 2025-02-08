@@ -1,10 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoInterruptiblePipelineData, IntoPipelineData, PipelineData, ShellError,
-    Signature, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Append;
@@ -26,11 +20,11 @@ impl Command for Append {
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Append any number of rows to a table."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"Be aware that this command 'unwraps' lists passed to it. So, if you pass a variable to it,
 and you want the variable's contents to be appended without being unwrapped, it's wise to
 pre-emptively wrap the variable in a list, like so: `append [$val]`. This way, `append` will
@@ -122,7 +116,7 @@ only unwrap the outer list, and leave the variable's contents untouched."#
         Ok(input
             .into_iter()
             .chain(other.into_pipeline_data())
-            .into_pipeline_data_with_metadata(metadata, engine_state.ctrlc.clone()))
+            .into_pipeline_data_with_metadata(call.head, engine_state.signals().clone(), metadata))
     }
 }
 

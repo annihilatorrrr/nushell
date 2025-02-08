@@ -1,9 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    span, Category, Example, PipelineData, ShellError, Signature, Type, Value,
-};
+use nu_engine::command_prelude::*;
 use std::io::IsTerminal as _;
 
 #[derive(Clone)]
@@ -23,7 +18,7 @@ impl Command for IsTerminal {
             .category(Category::Platform)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Check if stdin, stdout, or stderr is a terminal."
     }
 
@@ -61,12 +56,9 @@ impl Command for IsTerminal {
                 });
             }
             _ => {
-                let spans: Vec<_> = call.arguments.iter().map(|arg| arg.span()).collect();
-                let span = span(&spans);
-
                 return Err(ShellError::IncompatibleParametersSingle {
                     msg: "Only one stream may be checked".into(),
-                    span,
+                    span: call.arguments_span(),
                 });
             }
         };

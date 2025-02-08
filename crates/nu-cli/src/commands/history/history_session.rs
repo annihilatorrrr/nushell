@@ -1,8 +1,4 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct HistorySession;
@@ -12,7 +8,7 @@ impl Command for HistorySession {
         "history session"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Get the command history session."
     }
 

@@ -6,6 +6,8 @@
 # (**2**) catch classical flaws in the new changes with *clippy* and (**3**)
 # make sure all the tests pass.
 
+const toolkit_dir = path self .
+
 # check standard code formatting and apply the changes
 export def fmt [
     --check # do not apply the format changes, only check the syntax
@@ -17,14 +19,14 @@ export def fmt [
 
     if $check {
         try {
-            cargo fmt --all -- --check
+            ^cargo fmt --all -- --check
         } catch {
             error make --unspanned {
                 msg: $"\nplease run ('toolkit fmt' | pretty-format-command) to fix formatting!"
             }
         }
     } else {
-        cargo fmt --all
+        ^cargo fmt --all
     }
 }
 
@@ -41,13 +43,14 @@ export def clippy [
 
     # If changing these settings also change CI settings in .github/workflows/ci.yml
     try {(
-        cargo clippy
+        ^cargo clippy
             --workspace
             --exclude nu_plugin_*
-            --features ($features | str join ",")
-        --
+            --features ($features | default [] | str join ",")
+            --
             -D warnings
             -D clippy::unwrap_used
+            -D clippy::unchecked_duration_subtraction
     )
 
     if $verbose {
@@ -55,12 +58,12 @@ export def clippy [
     }
     # In tests we don't have to deny unwrap
     (
-        cargo clippy
+        ^cargo clippy
             --tests
             --workspace
             --exclude nu_plugin_*
-            --features ($features | str join ",")
-        --
+            --features ($features | default [] | str join ",")
+            --
             -D warnings
     )
 
@@ -68,11 +71,12 @@ export def clippy [
         print $"running ('toolkit clippy' | pretty-format-command) on plugins"
     }
     (
-        cargo clippy
+        ^cargo clippy
             --package nu_plugin_*
-        --
+            --
             -D warnings
             -D clippy::unwrap_used
+            -D clippy::unchecked_duration_subtraction
     )
 
     } catch {
@@ -90,15 +94,15 @@ export def test [
 ] {
     if $fast {
         if $workspace {
-            cargo nextest run --all
+            ^cargo nextest run --all
         } else {
-            cargo nextest run --features ($features | str join ",")
+            ^cargo nextest run --features ($features | default [] | str join ",")
         }
     } else {
         if $workspace {
-            cargo test --workspace
+            ^cargo test --workspace
         } else {
-            cargo test --features ($features | str join ",")
+            ^cargo test --features ($features | default [] | str join ",")
         }
     }
 }
@@ -107,7 +111,10 @@ export def test [
 export def "test stdlib" [
     --extra-args: string = ''
 ] {
-    cargo run -- -c $"use std testing; testing run-tests --path crates/nu-std ($extra_args)"
+    ^cargo run -- --no-config-file -c $"
+        use crates/nu-std/testing.nu
+        testing run-tests --path crates/nu-std ($extra_args)
+    "
 }
 
 # formats the pipe input inside backticks, dimmed and italic, as a pretty command
@@ -251,7 +258,10 @@ export def "check pr" [
     --fast # use the "nextext" `cargo` subcommand to speed up the tests (see [`cargo-nextest`](https://nexte.st/) and [`nextest-rs/nextest`](https://github.com/nextest-rs/nextest))
     --features: list<string> # the list of features to check the current PR on
 ] {
-    $env.NU_TEST_LOCALE_OVERRIDE = 'en_US.utf8';
+    $env.NU_TEST_LOCALE_OVERRIDE = 'en_US.utf8'
+    $env.LANG = 'en_US.UTF-8'
+    $env.LANGUAGE = 'en'
+
     try {
         fmt --check --verbose
     } catch {
@@ -295,7 +305,7 @@ export def "check pr" [
 
 # run Nushell from source with a right indicator
 export def run [] {
-    cargo run -- [
+    ^cargo run -- ...[
         -e "$env.PROMPT_COMMAND_RIGHT = $'(ansi magenta_reverse)trying Nushell inside Cargo(ansi reset)'"
     ]
 }
@@ -317,7 +327,7 @@ def build-nushell [features: string] {
     print $'(char nl)Building nushell'
     print '----------------------------'
 
-    cargo build --features $features --locked
+    ^cargo build --features $features --locked
 }
 
 def build-plugin [] {
@@ -327,7 +337,7 @@ def build-plugin [] {
     print '----------------------------'
 
     cd $"crates/($plugin)"
-    cargo build
+    ^cargo build
 }
 
 # build Nushell and plugins with some features
@@ -335,7 +345,7 @@ export def build [
     ...features: string@"nu-complete list features"  # a space-separated list of feature to install with Nushell
     --all # build all plugins with Nushell
 ] {
-    build-nushell ($features | str join ",")
+    build-nushell ($features | default [] | str join ",")
 
     if not $all {
         return
@@ -365,7 +375,7 @@ def install-plugin [] {
     print $'(char nl)Installing ($plugin)'
     print '----------------------------'
 
-    cargo install --path $"crates/($plugin)"
+    ^cargo install --path $"crates/($plugin)"
 }
 
 # install Nushell and features you want
@@ -374,7 +384,7 @@ export def install [
     --all # install all plugins with Nushell
 ] {
     touch crates/nu-cmd-lang/build.rs # needed to make sure `version` has the correct `commit_hash`
-    cargo install --path . --features ($features | str join ",") --locked --force
+    ^cargo install --path . --features ($features | default [] | str join ",") --locked --force
     if not $all {
         return
     }
@@ -402,10 +412,10 @@ def keep-plugin-executables [] {
     if (windows?) { where name ends-with '.exe' } else { where name !~ '\.d' }
 }
 
-# register all installed plugins
-export def "register plugins" [] {
+# add all installed plugins
+export def "add plugins" [] {
     let plugin_path = (which nu | get path.0 | path dirname)
-    let plugins = (ls $plugin_path | where name =~ nu_plugin | keep-plugin-executables)
+    let plugins = (ls $plugin_path | where name =~ nu_plugin | keep-plugin-executables | get name)
 
     if ($plugins | is-empty) {
         print $"no plugins found in ($plugin_path)..."
@@ -413,12 +423,15 @@ export def "register plugins" [] {
     }
 
     for plugin in $plugins {
-        print -n $"registering ($plugin.name), "
-        nu -c $"register '($plugin.name)'"
-        print "success!"
+        try {
+            print $"> plugin add ($plugin)"
+            plugin add $plugin
+        } catch { |err|
+            print -e $"(ansi rb)Failed to add ($plugin):\n($err.msg)(ansi reset)"
+        }
     }
 
-    print "\nplugins registered, please restart nushell"
+    print $"\n(ansi gb)plugins registered, please restart nushell(ansi reset)"
 }
 
 def compute-coverage [] {
@@ -427,23 +440,23 @@ def compute-coverage [] {
     # show env outputs .ini/.toml style description of the variables
     # In order to use from toml, we need to make sure our string literals are single quoted
     # This is especially important when running on Windows since "C:\blah" is treated as an escape
-    cargo llvm-cov show-env | str replace (char dq) (char sq) -a | from toml | load-env
+    ^cargo llvm-cov show-env | str replace (char dq) (char sq) -a | from toml | load-env
 
     print "Cleaning up coverage data"
-    cargo llvm-cov clean --workspace
+    ^cargo llvm-cov clean --workspace
 
     print "Building with workspace and profile=ci"
     # Apparently we need to explicitly build the necessary parts
     # using the `--profile=ci` is basically `debug` build with unnecessary symbols stripped
     # leads to smaller binaries and potential savings when compiling and running
-    cargo build --workspace --profile=ci
+    ^cargo build --workspace --profile=ci
 
     print "Running tests with --workspace and profile=ci"
-    cargo test --workspace --profile=ci
+    ^cargo test --workspace --profile=ci
 
     # You need to provide the used profile to find the raw data
     print "Generating coverage report as lcov.info"
-    cargo llvm-cov report --lcov --output-path lcov.info --profile=ci
+    ^cargo llvm-cov report --lcov --output-path lcov.info --profile=ci
 }
 
 # Script to generate coverage locally
@@ -478,6 +491,171 @@ export def cov [] {
 
     let end = (date now)
     print $"Coverage generation took ($end - $start)."
+}
+
+# Benchmark a target revision (default: current branch) against a reference revision (default: main branch)
+#
+# Results are saved in a `./tango` directory
+# Ensure you have `cargo-export` installed to generate separate artifacts for each branch.
+export def benchmark-compare [
+    target?: string     # which branch to compare (default: current branch)
+    reference?: string  # the reference to compare against (default: main branch)
+] {
+    let reference = $reference | default "main"
+    let current = git branch --show-current
+    let target = $target | default $current
+
+    print $'-- Benchmarking ($target) against ($reference)'
+
+    let export_dir = $env.PWD | path join "tango"
+    let ref_bin_dir = $export_dir | path join bin $reference
+    let tgt_bin_dir = $export_dir | path join bin $target
+
+    # benchmark the target revision
+    print $'-- Running benchmarks for ($target)'
+    git checkout $target
+    ^cargo export $tgt_bin_dir -- bench
+
+    # benchmark the comparison reference revision
+    print $'-- Running benchmarks for ($reference)'
+    git checkout $reference
+    ^cargo export $ref_bin_dir -- bench
+
+    # return back to the whatever revision before benchmarking
+    print '-- Done'
+    git checkout $current
+
+    # report results
+    let reference_bin = $ref_bin_dir | path join benchmarks
+    let target_bin = $tgt_bin_dir | path join benchmarks
+    ^$target_bin compare $reference_bin -o -s 50 --dump ($export_dir | path join samples)
+}
+
+# Benchmark the current branch and logs the result in `./tango/samples`
+#
+# Results are saved in a `./tango` directory
+# Ensure you have `cargo-export` installed to generate separate artifacts for each branch.
+export def benchmark-log [
+    target?: string     # which branch to compare (default: current branch)
+] {
+    let current = git branch --show-current
+    let target = $target | default $current
+    print $'-- Benchmarking ($target)'
+
+    let export_dir = $env.PWD | path join "tango"
+    let bin_dir = ($export_dir | path join bin $target)
+
+    # benchmark the target revision
+    if $target != $current {
+        git checkout $target
+    }
+    ^cargo export $bin_dir -- bench
+
+    # return back to the whatever revision before benchmarking
+    print '-- Done'
+    if $target != $current {
+        git checkout $current
+    }
+
+    # report results
+    let bench_bin = ($bin_dir | path join benchmarks)
+    ^$bench_bin compare -o -s 50 --dump ($export_dir | path join samples)
+}
+
+# Build all Windows archives and MSIs for release manually
+#
+# This builds std and full distributions for both aarch64 and x86_64.
+#
+# You need to have the cross-compilers for MSVC installed (see Visual Studio).
+# If compiling on x86_64, you need ARM64 compilers and libs too, and vice versa.
+export def 'release-pkg windows' [
+    --artifacts-dir="artifacts" # Where to copy the final msi and zip files to
+] {
+    $env.RUSTFLAGS = ""
+    $env.CARGO_TARGET_DIR = ""
+    hide-env RUSTFLAGS
+    hide-env CARGO_TARGET_DIR
+    $env.OS = "windows-latest"
+    $env.GITHUB_WORKSPACE = ("." | path expand)
+    $env.GITHUB_OUTPUT = ("./output/out.txt" | path expand)
+    let version = (open Cargo.toml | get package.version)
+    mkdir $artifacts_dir
+    for target in ["aarch64" "x86_64"] {
+        $env.TARGET = $target ++ "-pc-windows-msvc"
+
+        rm -rf output
+        _EXTRA_=bin nu .github/workflows/release-pkg.nu
+        cp $"output/nu-($version)-($target)-pc-windows-msvc.zip" $artifacts_dir
+
+        rm -rf output
+        _EXTRA_=msi nu .github/workflows/release-pkg.nu
+        cp $"target/wix/nu-($version)-($target)-pc-windows-msvc.msi" $artifacts_dir
+    }
+}
+
+# these crates should compile for wasm
+const wasm_compatible_crates = [
+    "nu-cmd-base",
+    "nu-cmd-extra",
+    "nu-cmd-lang",
+    "nu-color-config",
+    "nu-command",
+    "nu-derive-value",
+    "nu-engine",
+    "nu-glob",
+    "nu-json",
+    "nu-parser",
+    "nu-path",
+    "nu-pretty-hex",
+    "nu-protocol",
+    "nu-std",
+    "nu-system",
+    "nu-table",
+    "nu-term-grid",
+    "nu-utils",
+    "nuon"
+]
+
+def "prep wasm" [] {
+    ^rustup target add wasm32-unknown-unknown
+}
+
+# build crates for wasm
+export def "build wasm" [] {
+    prep wasm
+
+    for crate in $wasm_compatible_crates {
+        print $'(char nl)Building ($crate) for wasm'
+        print '----------------------------'
+        (
+            ^cargo build 
+                -p $crate 
+                --target wasm32-unknown-unknown 
+                --no-default-features
+        )
+    }
+}
+
+# make sure no api is used that doesn't work with wasm
+export def "clippy wasm" [] {
+    prep wasm
+
+    $env.CLIPPY_CONF_DIR = $toolkit_dir | path join clippy wasm
+
+    for crate in $wasm_compatible_crates {
+        print $'(char nl)Checking ($crate) for wasm'
+        print '----------------------------'
+        (
+            ^cargo clippy 
+                -p $crate 
+                --target wasm32-unknown-unknown 
+                --no-default-features
+                --
+                -D warnings
+                -D clippy::unwrap_used
+                -D clippy::unchecked_duration_subtraction
+        )
+    }
 }
 
 export def main [] { help toolkit }

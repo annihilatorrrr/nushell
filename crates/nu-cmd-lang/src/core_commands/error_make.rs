@@ -1,9 +1,5 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, PipelineData, Record, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::LabeledError;
 
 #[derive(Clone)]
 pub struct ErrorMake;
@@ -29,7 +25,7 @@ impl Command for ErrorMake {
             .category(Category::Core)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Create an error."
     }
 
@@ -60,16 +56,7 @@ impl Command for ErrorMake {
             Example {
                 description: "Create a simple custom error",
                 example: r#"error make {msg: "my custom error message"}"#,
-                result: Some(Value::error(
-                    ShellError::GenericError {
-                        error: "my custom error message".into(),
-                        msg: "".into(),
-                        span: None,
-                        help: None,
-                        inner: vec![],
-                    },
-                    Span::unknown(),
-                )),
+                result: None,
             },
             Example {
                 description: "Create a more complex custom error",
@@ -86,16 +73,7 @@ impl Command for ErrorMake {
         }
         help: "A help string, suggesting a fix to the user"  # optional
     }"#,
-                result: Some(Value::error(
-                    ShellError::GenericError {
-                        error: "my custom error message".into(),
-                        msg: "my custom label text".into(),
-                        span: Some(Span::new(123, 456)),
-                        help: Some("A help string, suggesting a fix to the user".into()),
-                        inner: vec![],
-                    },
-                    Span::unknown(),
-                )),
+                result: None,
             },
             Example {
                 description:
@@ -258,13 +236,10 @@ fn make_other_error(value: &Value, throw_span: Option<Span>) -> ShellError {
     }
 
     // correct return: everything present
-    ShellError::GenericError {
-        error: msg,
-        msg: text,
-        span: Some(Span::new(span_start as usize, span_end as usize)),
-        help,
-        inner: vec![],
-    }
+    let mut error =
+        LabeledError::new(msg).with_label(text, Span::new(span_start as usize, span_end as usize));
+    error.help = help;
+    error.into()
 }
 
 fn get_span_sides(span: &Record, span_span: Span, side: &str) -> Result<i64, ShellError> {

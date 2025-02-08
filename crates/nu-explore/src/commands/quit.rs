@@ -1,13 +1,10 @@
-use std::io::Result;
-
+use super::SimpleCommand;
+use crate::pager::{Pager, Transition};
+use anyhow::Result;
 use nu_protocol::{
     engine::{EngineState, Stack},
     Value,
 };
-
-use crate::pager::{Pager, Transition};
-
-use super::{HelpManual, SimpleCommand};
 
 #[derive(Default, Clone)]
 pub struct QuitCmd;
@@ -21,19 +18,8 @@ impl SimpleCommand for QuitCmd {
         Self::NAME
     }
 
-    fn usage(&self) -> &'static str {
+    fn description(&self) -> &'static str {
         ""
-    }
-
-    fn help(&self) -> Option<HelpManual> {
-        Some(HelpManual {
-            name: "quit",
-            description: "Quit and return to Nushell",
-            arguments: vec![],
-            examples: vec![],
-            input: vec![],
-            config_options: vec![],
-        })
     }
 
     fn parse(&mut self, _: &str) -> Result<()> {

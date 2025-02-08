@@ -1,4 +1,6 @@
 use nu_test_support::nu;
+use nu_test_support::playground::Playground;
+use std::fs;
 
 #[test]
 fn match_for_range() {
@@ -60,6 +62,12 @@ fn match_list_rest() {
     // Make sure we don't see any of these values in the output
     // As we do not auto-print loops anymore
     assert_eq!(actual.out, "single: 1 5");
+}
+
+#[test]
+fn match_list_rest_empty() {
+    let actual = nu!(r#"match [1] { [1 ..$rest] => { $rest == [] } }"#);
+    assert_eq!(actual.out, "true");
 }
 
 #[test]
@@ -127,6 +135,15 @@ fn match_constant_7() {
     let actual = nu!(
         r#"match 1kib { 1kb => { print "failure"}, 1kib => { print "success" }, 2kb => { print "failure" }}"#
     );
+    // Make sure we don't see any of these values in the output
+    // As we do not auto-print loops anymore
+    assert_eq!(actual.out, "success");
+}
+
+#[test]
+fn match_constant_8() {
+    let actual =
+        nu!(r#"match "foo" { r#'foo'# => { print "success" }, _ => { print "failure" } }"#);
     // Make sure we don't see any of these values in the output
     // As we do not auto-print loops anymore
     assert_eq!(actual.out, "success");
@@ -225,4 +242,41 @@ fn match_with_guard_no_expr_after_if() {
     );
 
     assert!(actual.err.contains("Match guard without an expression"));
+}
+
+#[test]
+fn match_with_comment_1() {
+    Playground::setup("match_with_comment", |dirs, _| {
+        let data = r#"
+match 1 {
+    # comment
+    _ => { print 'success' }
+}
+            "#;
+        fs::write(dirs.root().join("match_test"), data).expect("Unable to write file");
+        let actual = nu!(
+            cwd: dirs.root(),
+            "source match_test"
+        );
+
+        assert_eq!(actual.out, "success");
+    });
+}
+
+#[test]
+fn match_with_comment_2() {
+    Playground::setup("match_with_comment", |dirs, _| {
+        let data = r#"
+match 1 {
+    _ => { print 'success' } # comment
+}
+            "#;
+        fs::write(dirs.root().join("match_test"), data).expect("Unable to write file");
+        let actual = nu!(
+            cwd: dirs.root(),
+            "source match_test"
+        );
+
+        assert_eq!(actual.out, "success");
+    });
 }

@@ -1,11 +1,5 @@
 use crate::database::{SQLiteDatabase, MEMORY_DB};
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, Record, ShellError, Signature, Span,
-    SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct StorCreate;
@@ -17,7 +11,7 @@ impl Command for StorCreate {
 
     fn signature(&self) -> Signature {
         Signature::build("stor create")
-            .input_output_types(vec![(Type::Nothing, Type::Table(vec![]))])
+            .input_output_types(vec![(Type::Nothing, Type::table())])
             .required_named(
                 "table-name",
                 SyntaxShape::String,
@@ -34,7 +28,7 @@ impl Command for StorCreate {
             .category(Category::Database)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Create a table in the in-memory sqlite database."
     }
 
@@ -60,11 +54,14 @@ impl Command for StorCreate {
         let span = call.head;
         let table_name: Option<String> = call.get_flag(engine_state, stack, "table-name")?;
         let columns: Option<Record> = call.get_flag(engine_state, stack, "columns")?;
-        let db = Box::new(SQLiteDatabase::new(std::path::Path::new(MEMORY_DB), None));
+        let db = Box::new(SQLiteDatabase::new(
+            std::path::Path::new(MEMORY_DB),
+            engine_state.signals().clone(),
+        ));
 
         process(table_name, span, &db, columns)?;
         // dbg!(db.clone());
-        Ok(Value::custom_value(db, span).into_pipeline_data())
+        Ok(Value::custom(db, span).into_pipeline_data())
     }
 }
 
@@ -84,12 +81,9 @@ fn process(
     if let Ok(conn) = db.open_connection() {
         match columns {
             Some(record) => {
-                let mut create_stmt = format!(
-                    "CREATE TABLE {} ( id INTEGER NOT NULL PRIMARY KEY, ",
-                    new_table_name
-                );
+                let mut create_stmt = format!("CREATE TABLE {} ( ", new_table_name);
                 for (column_name, column_datatype) in record {
-                    match column_datatype.as_string()?.as_str() {
+                    match column_datatype.coerce_str()?.as_ref() {
                         "int" => {
                             create_stmt.push_str(&format!("{} INTEGER, ", column_name));
                         }
@@ -150,6 +144,8 @@ fn process(
 
 #[cfg(test)]
 mod test {
+    use nu_protocol::Signals;
+
     use super::*;
 
     #[test]
@@ -163,7 +159,10 @@ mod test {
     fn test_process_with_valid_parameters() {
         let table_name = Some("test_table".to_string());
         let span = Span::unknown();
-        let db = Box::new(SQLiteDatabase::new(std::path::Path::new(MEMORY_DB), None));
+        let db = Box::new(SQLiteDatabase::new(
+            std::path::Path::new(MEMORY_DB),
+            Signals::empty(),
+        ));
         let mut columns = Record::new();
         columns.insert(
             "int_column".to_string(),
@@ -179,7 +178,10 @@ mod test {
     fn test_process_with_missing_table_name() {
         let table_name = None;
         let span = Span::unknown();
-        let db = Box::new(SQLiteDatabase::new(std::path::Path::new(MEMORY_DB), None));
+        let db = Box::new(SQLiteDatabase::new(
+            std::path::Path::new(MEMORY_DB),
+            Signals::empty(),
+        ));
         let mut columns = Record::new();
         columns.insert(
             "int_column".to_string(),
@@ -199,7 +201,10 @@ mod test {
     fn test_process_with_missing_columns() {
         let table_name = Some("test_table".to_string());
         let span = Span::unknown();
-        let db = Box::new(SQLiteDatabase::new(std::path::Path::new(MEMORY_DB), None));
+        let db = Box::new(SQLiteDatabase::new(
+            std::path::Path::new(MEMORY_DB),
+            Signals::empty(),
+        ));
 
         let result = process(table_name, span, &db, None);
 
@@ -214,7 +219,10 @@ mod test {
     fn test_process_with_unsupported_column_data_type() {
         let table_name = Some("test_table".to_string());
         let span = Span::unknown();
-        let db = Box::new(SQLiteDatabase::new(std::path::Path::new(MEMORY_DB), None));
+        let db = Box::new(SQLiteDatabase::new(
+            std::path::Path::new(MEMORY_DB),
+            Signals::empty(),
+        ));
         let mut columns = Record::new();
         let column_datatype = "bogus_data_type".to_string();
         columns.insert(

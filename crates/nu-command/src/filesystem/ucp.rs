@@ -1,11 +1,6 @@
-use nu_cmd_base::arg_glob;
-use nu_engine::{current_dir, CallExt};
-use nu_glob::GlobResult;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type, Value,
-};
+#[allow(deprecated)]
+use nu_engine::{command_prelude::*, current_dir};
+use nu_protocol::{shell_error::io::IoError, NuGlob};
 use std::path::PathBuf;
 use uu_cp::{BackupMode, CopyMode, UpdateMode};
 
@@ -25,7 +20,7 @@ impl Command for UCp {
         "cp"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Copy files using uutils/coreutils cp."
     }
 
@@ -62,7 +57,7 @@ impl Command for UCp {
                 None
             )
             .switch("debug", "explain how a file is copied. Implies -v", None)
-            .rest("paths", SyntaxShape::Filepath, "Copy SRC file/s to DEST.")
+            .rest("paths", SyntaxShape::OneOf(vec![SyntaxShape::GlobPattern, SyntaxShape::String]), "Copy SRC file/s to DEST.")
             .allow_variants_without_examples(true)
             .category(Category::FileSystem)
     }
@@ -91,17 +86,22 @@ impl Command for UCp {
             },
             Example {
                 description: "Copy only if source file is newer than target file",
-                example: "cp -u a b",
+                example: "cp -u myfile newfile",
                 result: None,
             },
             Example {
                 description: "Copy file preserving mode and timestamps attributes",
-                example: "cp --preserve [ mode timestamps ] a b",
+                example: "cp --preserve [ mode timestamps ] myfile newfile",
                 result: None,
             },
             Example {
                 description: "Copy file erasing all attributes",
-                example: "cp --preserve [] a b",
+                example: "cp --preserve [] myfile newfile",
+                result: None,
+            },
+            Example {
+                description: "Copy file to a directory three levels above its current location",
+                example: "cp myfile ....",
                 result: None,
             },
         ]
@@ -146,14 +146,7 @@ impl Command for UCp {
         let reflink_mode = uu_cp::ReflinkMode::Auto;
         #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
         let reflink_mode = uu_cp::ReflinkMode::Never;
-        let paths: Vec<Spanned<String>> = call.rest(engine_state, stack, 0)?;
-        let mut paths: Vec<Spanned<String>> = paths
-            .into_iter()
-            .map(|p| Spanned {
-                item: nu_utils::strip_ansi_string_unlikely(p.item),
-                span: p.span,
-            })
-            .collect();
+        let mut paths = call.rest::<Spanned<NuGlob>>(engine_state, stack, 0)?;
         if paths.is_empty() {
             return Err(ShellError::GenericError {
                 error: "Missing file operand".into(),
@@ -167,15 +160,23 @@ impl Command for UCp {
         if paths.len() == 1 {
             return Err(ShellError::GenericError {
                 error: "Missing destination path".into(),
-                msg: format!("Missing destination path operand after {}", paths[0].item),
+                msg: format!(
+                    "Missing destination path operand after {}",
+                    paths[0].item.as_ref()
+                ),
                 span: Some(paths[0].span),
                 help: None,
                 inner: vec![],
             });
         }
         let target = paths.pop().expect("Should not be reached?");
-        let target_path = PathBuf::from(&target.item);
-        if target.item.ends_with(PATH_SEPARATOR) && !target_path.is_dir() {
+        let target_path = PathBuf::from(&nu_utils::strip_ansi_string_unlikely(
+            target.item.to_string(),
+        ));
+        #[allow(deprecated)]
+        let cwd = current_dir(engine_state, stack)?;
+        let target_path = nu_path::expand_path_with(target_path, &cwd, target.item.is_expand());
+        if target.item.as_ref().ends_with(PATH_SEPARATOR) && !target_path.is_dir() {
             return Err(ShellError::GenericError {
                 error: "is not a directory".into(),
                 msg: "is not a directory".into(),
@@ -187,13 +188,20 @@ impl Command for UCp {
 
         // paths now contains the sources
 
-        let cwd = current_dir(engine_state, stack)?;
-        let mut sources: Vec<PathBuf> = Vec::new();
+        let mut sources: Vec<(Vec<PathBuf>, bool)> = Vec::new();
 
-        for p in paths {
-            let exp_files = arg_glob(&p, &cwd)?.collect::<Vec<GlobResult>>();
+        for mut p in paths {
+            p.item = p.item.strip_ansi_string_unlikely();
+            let exp_files: Vec<Result<PathBuf, ShellError>> =
+                nu_engine::glob_from(&p, &cwd, call.head, None)
+                    .map(|f| f.1)?
+                    .collect();
             if exp_files.is_empty() {
-                return Err(ShellError::FileNotFound { span: p.span });
+                return Err(ShellError::Io(IoError::new(
+                    std::io::ErrorKind::NotFound,
+                    p.span,
+                    PathBuf::from(p.item.to_string()),
+                )));
             };
             let mut app_vals: Vec<PathBuf> = Vec::new();
             for v in exp_files {
@@ -212,26 +220,22 @@ impl Command for UCp {
                         };
                         app_vals.push(path)
                     }
-                    Err(e) => {
-                        return Err(ShellError::ErrorExpandingGlob {
-                            msg: format!("error {} in path {}", e.error(), e.path().display()),
-                            span: p.span,
-                        });
-                    }
+                    Err(e) => return Err(e),
                 }
             }
-            sources.append(&mut app_vals);
+            sources.push((app_vals, p.item.is_expand()));
         }
 
         // Make sure to send absolute paths to avoid uu_cp looking for cwd in std::env which is not
         // supported in Nushell
-        for src in sources.iter_mut() {
-            if !src.is_absolute() {
-                *src = nu_path::expand_path_with(&src, &cwd);
+        for (sources, need_expand_tilde) in sources.iter_mut() {
+            for src in sources.iter_mut() {
+                if !src.is_absolute() {
+                    *src = nu_path::expand_path_with(&*src, &cwd, *need_expand_tilde);
+                }
             }
         }
-
-        let target_path = nu_path::expand_path_with(&target_path, &cwd);
+        let sources: Vec<PathBuf> = sources.into_iter().flat_map(|x| x.0).collect();
 
         let attributes = make_attributes(preserve)?;
 
@@ -286,7 +290,14 @@ const ATTR_SET: uu_cp::Preserve = uu_cp::Preserve::Yes { required: true };
 fn make_attributes(preserve: Option<Value>) -> Result<uu_cp::Attributes, ShellError> {
     if let Some(preserve) = preserve {
         let mut attributes = uu_cp::Attributes {
-            #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "android",
+                target_os = "macos",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
             ownership: ATTR_UNSET,
             mode: ATTR_UNSET,
             timestamps: ATTR_UNSET,
@@ -301,7 +312,14 @@ fn make_attributes(preserve: Option<Value>) -> Result<uu_cp::Attributes, ShellEr
         // By default preseerve only mode
         Ok(uu_cp::Attributes {
             mode: ATTR_SET,
-            #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "android",
+                target_os = "macos",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
             ownership: ATTR_UNSET,
             timestamps: ATTR_UNSET,
             context: ATTR_UNSET,
@@ -337,7 +355,14 @@ fn parse_and_set_attribute(
         Value::String { val, .. } => {
             let attribute = match val.as_str() {
                 "mode" => &mut attribute.mode,
-                #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "freebsd",
+                    target_os = "android",
+                    target_os = "macos",
+                    target_os = "netbsd",
+                    target_os = "openbsd"
+                ))]
                 "ownership" => &mut attribute.ownership,
                 "timestamps" => &mut attribute.timestamps,
                 "context" => &mut attribute.context,

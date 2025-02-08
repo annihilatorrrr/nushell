@@ -25,9 +25,9 @@ pub struct ProcessInfo {
     pub curr_res: Option<RUsageInfoV2>,
     pub prev_res: Option<RUsageInfoV2>,
     pub interval: Duration,
+    pub start_time: i64,
 }
 
-#[cfg_attr(tarpaulin, skip)]
 pub fn collect_proc(interval: Duration, _with_thread: bool) -> Vec<ProcessInfo> {
     let mut base_procs = Vec::new();
     let mut ret = Vec::new();
@@ -93,8 +93,9 @@ pub fn collect_proc(interval: Duration, _with_thread: bool) -> Vec<ProcessInfo> 
         let curr_res = pidrusage::<RUsageInfoV2>(pid).ok();
 
         let curr_time = Instant::now();
-        let interval = curr_time - prev_time;
+        let interval = curr_time.saturating_duration_since(prev_time);
         let ppid = curr_task.pbsd.pbi_ppid as i32;
+        let start_time = curr_task.pbsd.pbi_start_tvsec as i64;
 
         let proc = ProcessInfo {
             pid,
@@ -108,6 +109,7 @@ pub fn collect_proc(interval: Duration, _with_thread: bool) -> Vec<ProcessInfo> 
             curr_res,
             prev_res,
             interval,
+            start_time,
         };
 
         ret.push(proc);
@@ -116,7 +118,6 @@ pub fn collect_proc(interval: Duration, _with_thread: bool) -> Vec<ProcessInfo> 
     ret
 }
 
-#[cfg_attr(tarpaulin, skip)]
 fn get_arg_max() -> size_t {
     let mut mib: [c_int; 2] = [libc::CTL_KERN, libc::KERN_ARGMAX];
     let mut arg_max = 0i32;
@@ -144,16 +145,12 @@ pub struct PathInfo {
     pub cwd: PathBuf,
 }
 
-#[cfg_attr(tarpaulin, skip)]
 unsafe fn get_unchecked_str(cp: *mut u8, start: *mut u8) -> String {
-    let len = cp as usize - start as usize;
-    let part = Vec::from_raw_parts(start, len, len);
-    let tmp = String::from_utf8_unchecked(part.clone());
-    ::std::mem::forget(part);
-    tmp
+    let len = (cp as usize).saturating_sub(start as usize);
+    let part = std::slice::from_raw_parts(start, len);
+    String::from_utf8_unchecked(part.to_vec())
 }
 
-#[cfg_attr(tarpaulin, skip)]
 fn get_path_info(pid: i32, mut size: size_t) -> Option<PathInfo> {
     let mut proc_args = Vec::with_capacity(size);
     let ptr: *mut u8 = proc_args.as_mut_slice().as_mut_ptr();
@@ -254,7 +251,6 @@ fn get_path_info(pid: i32, mut size: size_t) -> Option<PathInfo> {
     }
 }
 
-#[cfg_attr(tarpaulin, skip)]
 fn clone_task_all_info(src: &TaskAllInfo) -> TaskAllInfo {
     let pbsd = BSDInfo {
         pbi_flags: src.pbsd.pbi_flags,
@@ -385,7 +381,7 @@ impl ProcessInfo {
             self.curr_task.ptinfo.pti_total_user + self.curr_task.ptinfo.pti_total_system;
         let prev_time =
             self.prev_task.ptinfo.pti_total_user + self.prev_task.ptinfo.pti_total_system;
-        let usage_ticks = curr_time - prev_time;
+        let usage_ticks = curr_time.saturating_sub(prev_time);
         let interval_us = self.interval.as_micros();
         let ticktime_us = mach_ticktime() / 1000.0;
         usage_ticks as f64 * 100.0 * ticktime_us / interval_us as f64

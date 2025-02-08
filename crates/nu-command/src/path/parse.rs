@@ -1,14 +1,7 @@
-use std::path::Path;
-
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
-use nu_protocol::{
-    engine::Command, Category, Example, PipelineData, Record, ShellError, Signature, Span, Spanned,
-    SyntaxShape, Type, Value,
-};
-
 use super::PathSubcommandArguments;
+use nu_engine::command_prelude::*;
+use nu_protocol::engine::StateWorkingSet;
+use std::path::Path;
 
 struct Arguments {
     extension: Option<Spanned<String>>,
@@ -27,8 +20,8 @@ impl Command for SubCommand {
     fn signature(&self) -> Signature {
         Signature::build("path parse")
             .input_output_types(vec![
-                (Type::String, Type::Record(vec![])),
-                (Type::List(Box::new(Type::String)), Type::Table(vec![])),
+                (Type::String, Type::record()),
+                (Type::List(Box::new(Type::String)), Type::table()),
             ])
             .named(
                 "extension",
@@ -39,11 +32,11 @@ impl Command for SubCommand {
             .category(Category::Path)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Convert a path into structured data."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"Each path is split into a table with 'parent', 'stem' and 'extension' fields.
 On Windows, an extra 'prefix' column is added."#
     }
@@ -70,7 +63,7 @@ On Windows, an extra 'prefix' column is added."#
         }
         input.map(
             move |value| super::operate(&parse, &args, value, head),
-            engine_state.ctrlc.clone(),
+            engine_state.signals(),
         )
     }
 
@@ -91,14 +84,12 @@ On Windows, an extra 'prefix' column is added."#
         }
         input.map(
             move |value| super::operate(&parse, &args, value, head),
-            working_set.permanent().ctrlc.clone(),
+            working_set.permanent().signals(),
         )
     }
 
     #[cfg(windows)]
     fn examples(&self) -> Vec<Example> {
-        use nu_protocol::record;
-
         vec![
             Example {
                 description: "Parse a single path",
@@ -148,8 +139,6 @@ On Windows, an extra 'prefix' column is added."#
 
     #[cfg(not(windows))]
     fn examples(&self) -> Vec<Example> {
-        use nu_protocol::record;
-
         vec![
             Example {
                 description: "Parse a path",

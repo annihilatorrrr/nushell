@@ -1,15 +1,18 @@
+#![allow(clippy::byte_char_slices)]
+
 use nu_cmd_base::hook::eval_hook;
 use nu_engine::{eval_block, eval_block_with_early_return};
-use nu_parser::{escape_quote_string, lex, parse, unescape_unquote_string, Token, TokenContents};
-use nu_protocol::engine::StateWorkingSet;
+use nu_parser::{lex, parse, unescape_unquote_string, Token, TokenContents};
 use nu_protocol::{
-    engine::{EngineState, Stack},
-    print_if_stream, PipelineData, ShellError, Span, Value,
+    cli_error::report_compile_error,
+    debugger::WithoutDebug,
+    engine::{EngineState, Stack, StateWorkingSet},
+    report_parse_error, report_parse_warning, report_shell_error, PipelineData, ShellError, Span,
+    Value,
 };
-use nu_protocol::{report_error, report_error_new};
 #[cfg(windows)]
 use nu_utils::enable_vt_processing;
-use nu_utils::utils::perf;
+use nu_utils::{escape_quote_string, perf};
 use std::path::Path;
 
 // This will collect environment variables from std::env and adds them to a stack.
@@ -40,9 +43,8 @@ fn gather_env_vars(
     init_cwd: &Path,
 ) {
     fn report_capture_error(engine_state: &EngineState, env_str: &str, msg: &str) {
-        let working_set = StateWorkingSet::new(engine_state);
-        report_error(
-            &working_set,
+        report_shell_error(
+            engine_state,
             &ShellError::GenericError {
                 error: format!("Environment variable was not captured: {env_str}"),
                 msg: "".into(),
@@ -72,9 +74,8 @@ fn gather_env_vars(
         }
         None => {
             // Could not capture current working directory
-            let working_set = StateWorkingSet::new(engine_state);
-            report_error(
-                &working_set,
+            report_shell_error(
+                engine_state,
                 &ShellError::GenericError {
                     error: "Current directory is not a valid utf-8 path".into(),
                     msg: "".into(),
@@ -93,8 +94,8 @@ fn gather_env_vars(
     let span_offset = engine_state.next_span_start();
 
     engine_state.add_file(
-        "Host Environment Variables".to_string(),
-        fake_env_file.as_bytes().to_vec(),
+        "Host Environment Variables".into(),
+        fake_env_file.as_bytes().into(),
     );
 
     let (tokens, _) = lex(fake_env_file.as_bytes(), span_offset, &[], &[], true);
@@ -131,7 +132,7 @@ fn gather_env_vars(
                     working_set.error(err);
                 }
 
-                if working_set.parse_errors.first().is_some() {
+                if !working_set.parse_errors.is_empty() {
                     report_capture_error(
                         engine_state,
                         &String::from_utf8_lossy(contents),
@@ -175,7 +176,7 @@ fn gather_env_vars(
                     working_set.error(err);
                 }
 
-                if working_set.parse_errors.first().is_some() {
+                if !working_set.parse_errors.is_empty() {
                     report_capture_error(
                         engine_state,
                         &String::from_utf8_lossy(contents),
@@ -202,6 +203,35 @@ fn gather_env_vars(
     }
 }
 
+/// Print a pipeline with formatting applied based on display_output hook.
+///
+/// This function should be preferred when printing values resulting from a completed evaluation.
+/// For values printed as part of a command's execution, such as values printed by the `print` command,
+/// the `PipelineData::print_table` function should be preferred instead as it is not config-dependent.
+///
+/// `no_newline` controls if we need to attach newline character to output.
+pub fn print_pipeline(
+    engine_state: &mut EngineState,
+    stack: &mut Stack,
+    pipeline: PipelineData,
+    no_newline: bool,
+) -> Result<(), ShellError> {
+    if let Some(hook) = engine_state.get_config().hooks.display_output.clone() {
+        let pipeline = eval_hook(
+            engine_state,
+            stack,
+            Some(pipeline),
+            vec![],
+            &hook,
+            "display_output",
+        )?;
+        pipeline.print_raw(engine_state, no_newline, false)
+    } else {
+        // if display_output isn't set, we should still prefer to print with some formatting
+        pipeline.print_table(engine_state, stack, no_newline, false)
+    }
+}
+
 pub fn eval_source(
     engine_state: &mut EngineState,
     stack: &mut Stack,
@@ -209,9 +239,49 @@ pub fn eval_source(
     fname: &str,
     input: PipelineData,
     allow_return: bool,
-) -> bool {
+) -> i32 {
     let start_time = std::time::Instant::now();
 
+    let exit_code = match evaluate_source(engine_state, stack, source, fname, input, allow_return) {
+        Ok(failed) => {
+            let code = failed.into();
+            stack.set_last_exit_code(code, Span::unknown());
+            code
+        }
+        Err(err) => {
+            report_shell_error(engine_state, &err);
+            let code = err.exit_code();
+            stack.set_last_error(&err);
+            code.unwrap_or(0)
+        }
+    };
+
+    // reset vt processing, aka ansi because illbehaved externals can break it
+    #[cfg(windows)]
+    {
+        let _ = enable_vt_processing();
+    }
+
+    perf!(
+        &format!("eval_source {}", &fname),
+        start_time,
+        engine_state
+            .get_config()
+            .use_ansi_coloring
+            .get(engine_state)
+    );
+
+    exit_code
+}
+
+fn evaluate_source(
+    engine_state: &mut EngineState,
+    stack: &mut Stack,
+    source: &[u8],
+    fname: &str,
+    input: PipelineData,
+    allow_return: bool,
+) -> Result<bool, ShellError> {
     let (block, delta) = {
         let mut working_set = StateWorkingSet::new(engine_state);
         let output = parse(
@@ -221,108 +291,34 @@ pub fn eval_source(
             false,
         );
         if let Some(warning) = working_set.parse_warnings.first() {
-            report_error(&working_set, warning);
+            report_parse_warning(&working_set, warning);
         }
 
         if let Some(err) = working_set.parse_errors.first() {
-            set_last_exit_code(stack, 1);
-            report_error(&working_set, err);
-            return false;
+            report_parse_error(&working_set, err);
+            return Ok(true);
+        }
+
+        if let Some(err) = working_set.compile_errors.first() {
+            report_compile_error(&working_set, err);
+            return Ok(true);
         }
 
         (output, working_set.render())
     };
 
-    if let Err(err) = engine_state.merge_delta(delta) {
-        set_last_exit_code(stack, 1);
-        report_error_new(engine_state, &err);
-        return false;
-    }
+    engine_state.merge_delta(delta)?;
 
-    let b = if allow_return {
-        eval_block_with_early_return(engine_state, stack, &block, input, false, false)
+    let pipeline = if allow_return {
+        eval_block_with_early_return::<WithoutDebug>(engine_state, stack, &block, input)
     } else {
-        eval_block(engine_state, stack, &block, input, false, false)
-    };
+        eval_block::<WithoutDebug>(engine_state, stack, &block, input)
+    }?;
 
-    match b {
-        Ok(pipeline_data) => {
-            let config = engine_state.get_config();
-            let result;
-            if let PipelineData::ExternalStream {
-                stdout: stream,
-                stderr: stderr_stream,
-                exit_code,
-                ..
-            } = pipeline_data
-            {
-                result = print_if_stream(stream, stderr_stream, false, exit_code);
-            } else if let Some(hook) = config.hooks.display_output.clone() {
-                match eval_hook(
-                    engine_state,
-                    stack,
-                    Some(pipeline_data),
-                    vec![],
-                    &hook,
-                    "display_output",
-                ) {
-                    Err(err) => {
-                        result = Err(err);
-                    }
-                    Ok(val) => {
-                        result = val.print(engine_state, stack, false, false);
-                    }
-                }
-            } else {
-                result = pipeline_data.print(engine_state, stack, true, false);
-            }
+    let no_newline = matches!(&pipeline, &PipelineData::ByteStream(..));
+    print_pipeline(engine_state, stack, pipeline, no_newline)?;
 
-            match result {
-                Err(err) => {
-                    let working_set = StateWorkingSet::new(engine_state);
-
-                    report_error(&working_set, &err);
-
-                    return false;
-                }
-                Ok(exit_code) => {
-                    set_last_exit_code(stack, exit_code);
-                }
-            }
-
-            // reset vt processing, aka ansi because illbehaved externals can break it
-            #[cfg(windows)]
-            {
-                let _ = enable_vt_processing();
-            }
-        }
-        Err(err) => {
-            set_last_exit_code(stack, 1);
-
-            let working_set = StateWorkingSet::new(engine_state);
-
-            report_error(&working_set, &err);
-
-            return false;
-        }
-    }
-    perf(
-        &format!("eval_source {}", &fname),
-        start_time,
-        file!(),
-        line!(),
-        column!(),
-        engine_state.get_config().use_ansi_coloring,
-    );
-
-    true
-}
-
-fn set_last_exit_code(stack: &mut Stack, exit_code: i64) {
-    stack.add_env_var(
-        "LAST_EXIT_CODE".to_string(),
-        Value::int(exit_code, Span::unknown()),
-    );
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -347,16 +343,10 @@ mod test {
 
         let env = engine_state.render_env_vars();
 
-        assert!(
-            matches!(env.get(&"FOO".to_string()), Some(&Value::String { val, .. }) if val == "foo")
-        );
-        assert!(
-            matches!(env.get(&"SYMBOLS".to_string()), Some(&Value::String { val, .. }) if val == symbols)
-        );
-        assert!(
-            matches!(env.get(&symbols.to_string()), Some(&Value::String { val, .. }) if val == "symbols")
-        );
-        assert!(env.get(&"PWD".to_string()).is_some());
+        assert!(matches!(env.get("FOO"), Some(&Value::String { val, .. }) if val == "foo"));
+        assert!(matches!(env.get("SYMBOLS"), Some(&Value::String { val, .. }) if val == symbols));
+        assert!(matches!(env.get(symbols), Some(&Value::String { val, .. }) if val == "symbols"));
+        assert!(env.contains_key("PWD"));
         assert_eq!(env.len(), 4);
     }
 }

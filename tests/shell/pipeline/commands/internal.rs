@@ -1,4 +1,4 @@
-use nu_test_support::fs::Stub::FileWithContentToBeTrimmed;
+use nu_test_support::fs::Stub::{FileWithContent, FileWithContentToBeTrimmed};
 use nu_test_support::playground::Playground;
 use nu_test_support::{nu, pipeline};
 use pretty_assertions::assert_eq;
@@ -29,7 +29,7 @@ fn takes_rows_of_nu_value_strings_and_pipes_it_to_stdin_of_external() {
 #[test]
 fn treats_dot_dot_as_path_not_range() {
     Playground::setup("dot_dot_dir", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "nu_times.csv",
             "
                 name,rusty_luck,origin
@@ -83,7 +83,7 @@ fn for_loop() {
 #[test]
 fn subexpression_handles_dot() {
     Playground::setup("subexpression_handles_dot", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "nu_times.csv",
             "
                 name,rusty_luck,origin
@@ -521,7 +521,35 @@ fn run_dynamic_closures() {
     assert_eq!(actual.out, "holaaaa");
 }
 
-#[cfg(feature = "which-support")]
+#[test]
+fn dynamic_closure_type_check() {
+    let actual = nu!(r#"let closure = {|x: int| echo $x}; do $closure "aa""#);
+    assert!(actual.err.contains("can't convert string to int"))
+}
+
+#[test]
+fn dynamic_closure_optional_arg() {
+    let actual = nu!(r#"let closure = {|x: int = 3| echo $x}; do $closure"#);
+    assert_eq!(actual.out, "3");
+    let actual = nu!(r#"let closure = {|x: int = 3| echo $x}; do $closure 10"#);
+    assert_eq!(actual.out, "10");
+}
+
+#[test]
+fn dynamic_closure_rest_args() {
+    let actual = nu!(r#"let closure = {|...args| $args | str join ""}; do $closure 1 2 3"#);
+    assert_eq!(actual.out, "123");
+
+    let actual = nu!(
+        r#"let closure = {|required, ...args| $"($required), ($args | str join "")"}; do $closure 1 2 3"#
+    );
+    assert_eq!(actual.out, "1, 23");
+    let actual = nu!(
+        r#"let closure = {|required, optional?, ...args| $"($required), ($optional), ($args | str join "")"}; do $closure 1 2 3"#
+    );
+    assert_eq!(actual.out, "1, 2, 3");
+}
+
 #[test]
 fn argument_subexpression_reports_errors() {
     let actual = nu!("echo (ferris_is_not_here.exe)");
@@ -587,7 +615,7 @@ fn index_row() {
         let foo = [[name]; [joe] [bob]]; echo $foo.1 | to json --raw
         ");
 
-    assert_eq!(actual.out, r#"{"name": "bob"}"#);
+    assert_eq!(actual.out, r#"{"name":"bob"}"#);
 }
 
 #[test]
@@ -736,66 +764,32 @@ fn range_with_mixed_types() {
 
 #[test]
 fn filesize_math() {
-    let actual = nu!("
-        100 * 10kib
-        ");
-
-    assert_eq!(actual.out, "1000.0 KiB");
-    // why 1000.0 KB instead of 1.0 MB?
-    // looks like `byte.get_appropriate_unit(false)` behaves this way
+    let actual = nu!("100 * 10kB");
+    assert_eq!(actual.out, "1.0 MB");
 }
 
 #[test]
 fn filesize_math2() {
-    let actual = nu!("
-        100 / 10kb
-        ");
-
+    let actual = nu!("100 / 10kb");
     assert!(actual.err.contains("doesn't support"));
 }
 
 #[test]
 fn filesize_math3() {
-    let actual = nu!("
-        100kib / 10
-        ");
-
-    assert_eq!(actual.out, "10.0 KiB");
+    let actual = nu!("100kB / 10");
+    assert_eq!(actual.out, "10.0 kB");
 }
+
 #[test]
 fn filesize_math4() {
-    let actual = nu!("
-        100kib * 5
-        ");
-
-    assert_eq!(actual.out, "500.0 KiB");
+    let actual = nu!("100kB * 5");
+    assert_eq!(actual.out, "500.0 kB");
 }
 
 #[test]
 fn filesize_math5() {
-    let actual = nu!("
-        1000 * 1kib
-        ");
-
-    assert_eq!(actual.out, "1000.0 KiB");
-}
-
-#[test]
-fn filesize_math6() {
-    let actual = nu!("
-        1000 * 1mib
-        ");
-
-    assert_eq!(actual.out, "1000.0 MiB");
-}
-
-#[test]
-fn filesize_math7() {
-    let actual = nu!("
-        1000 * 1gib
-        ");
-
-    assert_eq!(actual.out, "1000.0 GiB");
+    let actual = nu!("100 * 1kB");
+    assert_eq!(actual.out, "100.0 kB");
 }
 
 #[test]
@@ -969,7 +963,9 @@ fn hide_alias_hides_alias() {
         "
     ));
 
-    assert!(actual.err.contains("did you mean 'all'?"));
+    assert!(
+        actual.err.contains("Command `ll` not found") && actual.err.contains("Did you mean `all`?")
+    );
 }
 
 mod parse {
@@ -1015,7 +1011,7 @@ mod parse {
     fn ensure_backticks_are_bareword_command() {
         let actual = nu!("`8abc123`");
 
-        assert!(actual.err.contains("was not found"),);
+        assert!(actual.err.contains("Command `8abc123` not found"),);
     }
 }
 
@@ -1045,63 +1041,58 @@ mod tilde_expansion {
 mod variable_scoping {
     use nu_test_support::nu;
 
-    macro_rules! test_variable_scope {
-        ($func:literal == $res:literal $(,)*) => {
-            let actual = nu!($func);
-
-            assert_eq!(actual.out, $res);
-        };
+    fn test_variable_scope(code: &str, expected: &str) {
+        let actual = nu!(code);
+        assert_eq!(actual.out, expected);
     }
-    macro_rules! test_variable_scope_list {
-        ($func:literal == $res:expr $(,)*) => {
-            let actual = nu!($func);
 
-            let result: Vec<&str> = actual.out.matches("ZZZ").collect();
-            assert_eq!(result, $res);
-        };
+    fn test_variable_scope_list(code: &str, expected: &[&str]) {
+        let actual = nu!(code);
+        let result: Vec<&str> = actual.out.matches("ZZZ").collect();
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn access_variables_in_scopes() {
-        test_variable_scope!(
+        test_variable_scope(
             " def test [input] { echo [0 1 2] | do { do { echo $input } } }
-                test ZZZ "
-                == "ZZZ"
+                test ZZZ ",
+            "ZZZ",
         );
-        test_variable_scope!(
+        test_variable_scope(
             r#" def test [input] { echo [0 1 2] | do { do { if $input == "ZZZ" { echo $input } else { echo $input } } } }
-                test ZZZ "#
-                == "ZZZ"
+                test ZZZ "#,
+            "ZZZ",
         );
-        test_variable_scope!(
+        test_variable_scope(
             r#" def test [input] { echo [0 1 2] | do { do { if $input == "ZZZ" { echo $input } else { echo $input } } } }
-                test ZZZ "#
-                == "ZZZ"
+                test ZZZ "#,
+            "ZZZ",
         );
-        test_variable_scope!(
+        test_variable_scope(
             " def test [input] { echo [0 1 2] | do { echo $input } }
-                test ZZZ "
-                == "ZZZ"
+                test ZZZ ",
+            "ZZZ",
         );
-        test_variable_scope!(
+        test_variable_scope(
             " def test [input] { echo [0 1 2] | do { if $input == $input { echo $input } else { echo $input } } }
-                test ZZZ "
-                == "ZZZ"
+                test ZZZ ",
+                "ZZZ"
         );
-        test_variable_scope_list!(
+        test_variable_scope_list(
             " def test [input] { echo [0 1 2] | each { |_| echo $input } }
-                test ZZZ "
-                == ["ZZZ", "ZZZ", "ZZZ"]
+                test ZZZ ",
+            &["ZZZ", "ZZZ", "ZZZ"],
         );
-        test_variable_scope_list!(
+        test_variable_scope_list(
             " def test [input] { echo [0 1 2] | each { |it| if $it > 0 {echo $input} else {echo $input}} }
-                test ZZZ "
-                == ["ZZZ", "ZZZ", "ZZZ"]
+                test ZZZ ",
+            &["ZZZ", "ZZZ", "ZZZ"],
         );
-        test_variable_scope_list!(
+        test_variable_scope_list(
             " def test [input] { echo [0 1 2] | each { |_| if $input == $input {echo $input} else {echo $input}} }
-                test ZZZ "
-                == ["ZZZ", "ZZZ", "ZZZ"]
+                test ZZZ ",
+            &["ZZZ", "ZZZ", "ZZZ"],
         );
     }
 }
@@ -1114,10 +1105,113 @@ fn pipe_input_to_print() {
 }
 
 #[test]
+fn err_pipe_input_to_print() {
+    let actual = nu!(r#""foo" e>| print"#);
+    assert!(actual.err.contains("only works on external commands"));
+}
+
+#[test]
+fn outerr_pipe_input_to_print() {
+    let actual = nu!(r#""foo" o+e>| print"#);
+    assert!(actual.err.contains("only works on external commands"));
+}
+
+#[test]
 fn command_not_found_error_shows_not_found_2() {
     let actual = nu!(r#"
             export def --wrapped my-foo [...rest] { foo };
             my-foo
         "#);
-    assert!(actual.err.contains("did you mean"));
+    assert!(
+        actual.err.contains("Command `foo` not found")
+            && actual.err.contains("Did you mean `for`?")
+    );
+}
+
+#[test]
+fn error_on_out_greater_pipe() {
+    let actual = nu!(r#""foo" o>| print"#);
+    assert!(actual
+        .err
+        .contains("Redirecting stdout to a pipe is the same as normal piping"))
+}
+
+#[test]
+fn error_with_backtrace() {
+    Playground::setup("error with backtrace", |dirs, sandbox| {
+        sandbox.with_files(&[FileWithContent("tmp_env.nu", "$env.NU_BACKTRACE = 1")]);
+
+        let actual = nu!(
+            env_config: "tmp_env.nu",
+            cwd: dirs.test(),
+            r#"def a [x] { if $x == 3 { error make {msg: 'a custom error'}}};a 3"#);
+        let chained_error_cnt: Vec<&str> = actual
+            .err
+            .matches("diagnostic code: chained_error")
+            .collect();
+        // run `a 3`, and it raises error, so there should be 1.
+        assert_eq!(chained_error_cnt.len(), 1);
+        assert!(actual.err.contains("a custom error"));
+
+        let actual = nu!(
+            env_config: "tmp_env.nu",
+            cwd: dirs.test(),
+            r#"def a [x] { if $x == 3 { error make {msg: 'a custom error'}}};def b [] { a 1; a 3; a 2 };b"#);
+
+        let chained_error_cnt: Vec<&str> = actual
+            .err
+            .matches("diagnostic code: chained_error")
+            .collect();
+        // run `b`, it runs `a 3`, and it raises error, so there should be 2.
+        assert_eq!(chained_error_cnt.len(), 2);
+        assert!(actual.err.contains("a custom error"));
+
+        let actual = nu!(
+            env_config: "tmp_env.nu",
+            cwd: dirs.test(),
+            r#"error make {msg: 'a custom err'}"#);
+        let chained_error_cnt: Vec<&str> = actual
+            .err
+            .matches("diagnostic code: chained_error")
+            .collect();
+        // run error make directly, show no backtrace is available
+        assert_eq!(chained_error_cnt.len(), 0);
+    });
+}
+
+#[test]
+fn liststream_error_with_backtrace() {
+    Playground::setup("liststream error with backtrace", |dirs, sandbox| {
+        sandbox.with_files(&[FileWithContent("tmp_env.nu", "$env.NU_BACKTRACE = 1")]);
+
+        let actual = nu!(
+            env_config: "tmp_env.nu",
+            cwd: dirs.test(),
+            r#"def a [x] { if $x == 3 { [1] | each {error make {'msg': 'a custom error'}}}};a 3"#);
+        assert!(actual.err.contains("a custom error"));
+
+        let actual = nu!(
+            env_config: "tmp_env.nu",
+            cwd: dirs.test(),
+            r#"def a [x] { if $x == 3 { [1] | each {error make {'msg': 'a custom error'}}}};def b [] { a 1; a 3; a 2 };b"#);
+        let chained_error_cnt: Vec<&str> = actual
+            .err
+            .matches("diagnostic code: chained_error")
+            .collect();
+        assert_eq!(chained_error_cnt.len(), 1);
+        assert!(actual.err.contains("a custom error"));
+        let eval_with_input_cnt: Vec<&str> = actual.err.matches("eval_block_with_input").collect();
+        assert_eq!(eval_with_input_cnt.len(), 2);
+
+        let actual = nu!(
+            env_config: "tmp_env.nu",
+            cwd: dirs.test(),
+            r#"[1] | each { error make {msg: 'a custom err'} }"#);
+        let chained_error_cnt: Vec<&str> = actual
+            .err
+            .matches("diagnostic code: chained_error")
+            .collect();
+        // run error make directly, show no backtrace is available
+        assert_eq!(chained_error_cnt.len(), 0);
+    });
 }

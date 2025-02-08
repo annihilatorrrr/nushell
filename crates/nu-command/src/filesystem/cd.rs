@@ -1,28 +1,8 @@
-#[cfg(unix)]
-use libc::gid_t;
-use nu_engine::{current_dir, CallExt};
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type, Value,
-};
-use std::path::Path;
+use std::path::PathBuf;
 
-// For checking whether we have permission to cd to a directory
-#[cfg(unix)]
-mod file_permissions {
-    pub type Mode = u32;
-    pub const USER_EXECUTE: Mode = libc::S_IXUSR as Mode;
-    pub const GROUP_EXECUTE: Mode = libc::S_IXGRP as Mode;
-    pub const OTHER_EXECUTE: Mode = libc::S_IXOTH as Mode;
-}
-
-// The result of checking whether we have permission to cd to a directory
-#[derive(Debug)]
-enum PermissionResult<'a> {
-    PermissionOk,
-    PermissionDenied(&'a str),
-}
+use nu_engine::command_prelude::*;
+use nu_protocol::shell_error::{self, io::IoError};
+use nu_utils::filesystem::{have_permission, PermissionResult};
 
 #[derive(Clone)]
 pub struct Cd;
@@ -32,7 +12,7 @@ impl Command for Cd {
         "cd"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Change directory."
     }
 
@@ -43,11 +23,8 @@ impl Command for Cd {
     fn signature(&self) -> nu_protocol::Signature {
         Signature::build("cd")
             .input_output_types(vec![(Type::Nothing, Type::Nothing)])
+            .switch("physical", "use the physical directory structure; resolve symbolic links before processing instances of ..", Some('P'))
             .optional("path", SyntaxShape::Directory, "The path to change to.")
-            .input_output_types(vec![
-                (Type::Nothing, Type::Nothing),
-                (Type::String, Type::Nothing),
-            ])
             .allow_variants_without_examples(true)
             .category(Category::FileSystem)
     }
@@ -59,8 +36,17 @@ impl Command for Cd {
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
+        let physical = call.has_flag(engine_state, stack, "physical")?;
         let path_val: Option<Spanned<String>> = call.opt(engine_state, stack, 0)?;
-        let cwd = current_dir(engine_state, stack)?;
+
+        // If getting PWD failed, default to the home directory. The user can
+        // use `cd` to reset PWD to a good state.
+        let cwd = engine_state
+            .cwd(Some(stack))
+            .ok()
+            .or_else(nu_path::home_dir)
+            .map(|path| path.into_std_path_buf())
+            .unwrap_or_default();
 
         let path_val = {
             if let Some(path) = path_val {
@@ -73,71 +59,80 @@ impl Command for Cd {
             }
         };
 
-        let (path, span) = match path_val {
+        let path = match path_val {
             Some(v) => {
                 if v.item == "-" {
-                    let oldpwd = stack.get_env_var(engine_state, "OLDPWD");
-
-                    if let Some(oldpwd) = oldpwd {
-                        let path = oldpwd.as_path()?;
-                        let path = match nu_path::canonicalize_with(path.clone(), &cwd) {
-                            Ok(p) => p,
-                            Err(_) => {
-                                return Err(ShellError::DirectoryNotFound {
-                                    dir: path.to_string_lossy().to_string(),
-                                    span: v.span,
-                                });
-                            }
-                        };
-                        (path.to_string_lossy().to_string(), v.span)
+                    if let Some(oldpwd) = stack.get_env_var(engine_state, "OLDPWD") {
+                        oldpwd.to_path()?
                     } else {
-                        (cwd.to_string_lossy().to_string(), v.span)
+                        cwd
                     }
                 } else {
+                    // Trim whitespace from the end of path.
                     let path_no_whitespace =
                         &v.item.trim_end_matches(|x| matches!(x, '\x09'..='\x0d'));
 
-                    let path = match nu_path::canonicalize_with(path_no_whitespace, &cwd) {
-                        Ok(p) => {
-                            if !p.is_dir() {
-                                return Err(ShellError::NotADirectory { span: v.span });
+                    // If `--physical` is specified, canonicalize the path; otherwise expand the path.
+                    if physical {
+                        if let Ok(path) = nu_path::canonicalize_with(path_no_whitespace, &cwd) {
+                            if !path.is_dir() {
+                                return Err(shell_error::io::IoError::new(
+                                    shell_error::io::ErrorKind::NotADirectory,
+                                    v.span,
+                                    None,
+                                )
+                                .into());
                             };
-                            p
+                            path
+                        } else {
+                            return Err(shell_error::io::IoError::new(
+                                std::io::ErrorKind::NotFound,
+                                v.span,
+                                PathBuf::from(path_no_whitespace),
+                            )
+                            .into());
                         }
-
-                        // if canonicalize failed, let's check to see if it's abbreviated
-                        Err(_) => {
-                            return Err(ShellError::DirectoryNotFound {
-                                dir: path_no_whitespace.to_string(),
-                                span: v.span,
-                            });
-                        }
-                    };
-                    (path.to_string_lossy().to_string(), v.span)
+                    } else {
+                        let path = nu_path::expand_path_with(path_no_whitespace, &cwd, true);
+                        if !path.exists() {
+                            return Err(shell_error::io::IoError::new(
+                                std::io::ErrorKind::NotFound,
+                                v.span,
+                                PathBuf::from(path_no_whitespace),
+                            )
+                            .into());
+                        };
+                        if !path.is_dir() {
+                            return Err(shell_error::io::IoError::new(
+                                shell_error::io::ErrorKind::NotADirectory,
+                                v.span,
+                                path,
+                            )
+                            .into());
+                        };
+                        path
+                    }
                 }
             }
-            None => {
-                let path = nu_path::expand_tilde("~");
-                (path.to_string_lossy().to_string(), call.head)
-            }
+            None => nu_path::expand_tilde("~"),
         };
 
-        let path_value = Value::string(path.clone(), span);
-
+        // Set OLDPWD.
+        // We're using `Stack::get_env_var()` instead of `EngineState::cwd()` to avoid a conversion roundtrip.
         if let Some(oldpwd) = stack.get_env_var(engine_state, "PWD") {
-            stack.add_env_var("OLDPWD".into(), oldpwd)
+            stack.add_env_var("OLDPWD".into(), oldpwd.clone())
         }
 
         match have_permission(&path) {
             //FIXME: this only changes the current scope, but instead this environment variable
             //should probably be a block that loads the information from the state in the overlay
             PermissionResult::PermissionOk => {
-                stack.add_env_var("PWD".into(), path_value);
+                stack.set_cwd(path)?;
                 Ok(PipelineData::empty())
             }
-            PermissionResult::PermissionDenied(reason) => Err(ShellError::IOError {
-                msg: format!("Cannot change directory to {path}: {reason}"),
-            }),
+            PermissionResult::PermissionDenied(_) => {
+                Err(IoError::new(std::io::ErrorKind::PermissionDenied, call.head, path).into())
+            }
         }
     }
 
@@ -149,102 +144,25 @@ impl Command for Cd {
                 result: None,
             },
             Example {
-                description: "Change to the previous working directory ($OLDPWD)",
+                description: r#"Change to the previous working directory (same as "cd $env.OLDPWD")"#,
                 example: r#"cd -"#,
+                result: None,
+            },
+            Example {
+                description: "Changing directory with a custom command requires 'def --env'",
+                example: r#"def --env gohome [] { cd ~ }"#,
+                result: None,
+            },
+            Example {
+                description: "Move two directories up in the tree (the parent directory's parent). Additional dots can be added for additional levels.",
+                example: r#"cd ..."#,
+                result: None,
+            },
+            Example {
+                description: "The cd command itself is often optional. Simply entering a path to a directory will cd to it.",
+                example: r#"/home"#,
                 result: None,
             },
         ]
     }
-}
-
-// TODO: Maybe we should use file_attributes() from https://doc.rust-lang.org/std/os/windows/fs/trait.MetadataExt.html
-// More on that here: https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
-#[cfg(windows)]
-fn have_permission(dir: impl AsRef<Path>) -> PermissionResult<'static> {
-    match dir.as_ref().read_dir() {
-        Err(e) => {
-            if matches!(e.kind(), std::io::ErrorKind::PermissionDenied) {
-                PermissionResult::PermissionDenied("Folder is unable to be read")
-            } else {
-                PermissionResult::PermissionOk
-            }
-        }
-        Ok(_) => PermissionResult::PermissionOk,
-    }
-}
-
-#[cfg(unix)]
-fn have_permission(dir: impl AsRef<Path>) -> PermissionResult<'static> {
-    use crate::filesystem::util::users;
-
-    match dir.as_ref().metadata() {
-        Ok(metadata) => {
-            use std::os::unix::fs::MetadataExt;
-            let bits = metadata.mode();
-            let has_bit = |bit| bits & bit == bit;
-            let current_user_uid = users::get_current_uid();
-            if current_user_uid == 0 {
-                return PermissionResult::PermissionOk;
-            }
-            let current_user_gid = users::get_current_gid();
-            let owner_user = metadata.uid();
-            let owner_group = metadata.gid();
-            match (
-                current_user_uid == owner_user,
-                current_user_gid == owner_group,
-            ) {
-                (true, _) => {
-                    if has_bit(file_permissions::USER_EXECUTE) {
-                        PermissionResult::PermissionOk
-                    } else {
-                        PermissionResult::PermissionDenied(
-                            "You are the owner but do not have execute permission",
-                        )
-                    }
-                }
-                (false, true) => {
-                    if has_bit(file_permissions::GROUP_EXECUTE) {
-                        PermissionResult::PermissionOk
-                    } else {
-                        PermissionResult::PermissionDenied(
-                            "You are in the group but do not have execute permission",
-                        )
-                    }
-                }
-                (false, false) => {
-                    if has_bit(file_permissions::OTHER_EXECUTE)
-                        || (has_bit(file_permissions::GROUP_EXECUTE)
-                            && any_group(current_user_gid, owner_group))
-                    {
-                        PermissionResult::PermissionOk
-                    } else {
-                        PermissionResult::PermissionDenied(
-                            "You are neither the owner, in the group, nor the super user and do not have permission",
-                        )
-                    }
-                }
-            }
-        }
-        Err(_) => PermissionResult::PermissionDenied("Could not retrieve file metadata"),
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn any_group(_current_user_gid: gid_t, owner_group: u32) -> bool {
-    use crate::filesystem::util::users;
-    let Some(user_groups) = users::current_user_groups() else {
-        return false;
-    };
-    user_groups.iter().any(|gid| gid.as_raw() == owner_group)
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-fn any_group(current_user_gid: gid_t, owner_group: u32) -> bool {
-    use crate::filesystem::util::users;
-
-    users::get_current_username()
-        .and_then(|name| users::get_user_groups(&name, current_user_gid))
-        .unwrap_or_default()
-        .into_iter()
-        .any(|gid| gid.as_raw() == owner_group)
 }

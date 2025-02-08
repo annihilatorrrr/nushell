@@ -1,10 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, IntoInterruptiblePipelineData, IntoPipelineData, PipelineData,
-    ShellError, Signature, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Wrap;
@@ -14,16 +8,16 @@ impl Command for Wrap {
         "wrap"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Wrap the value into a column."
     }
 
     fn signature(&self) -> nu_protocol::Signature {
         Signature::build("wrap")
             .input_output_types(vec![
-                (Type::List(Box::new(Type::Any)), Type::Table(vec![])),
-                (Type::Range, Type::Table(vec![])),
-                (Type::Any, Type::Record(vec![])),
+                (Type::List(Box::new(Type::Any)), Type::table()),
+                (Type::Range, Type::table()),
+                (Type::Any, Type::record()),
             ])
             .required("name", SyntaxShape::String, "The name of the column.")
             .allow_variants_without_examples(true)
@@ -48,9 +42,9 @@ impl Command for Wrap {
             | PipelineData::ListStream { .. } => Ok(input
                 .into_iter()
                 .map(move |x| Value::record(record! { name.clone() => x }, span))
-                .into_pipeline_data_with_metadata(metadata, engine_state.ctrlc.clone())),
-            PipelineData::ExternalStream { .. } => Ok(Value::record(
-                record! { name => input.into_value(call.head) },
+                .into_pipeline_data_with_metadata(span, engine_state.signals().clone(), metadata)),
+            PipelineData::ByteStream(stream, ..) => Ok(Value::record(
+                record! { name => stream.into_value()? },
                 span,
             )
             .into_pipeline_data_with_metadata(metadata)),
@@ -63,31 +57,34 @@ impl Command for Wrap {
         vec![
             Example {
                 description: "Wrap a list into a table with a given column name",
-                example: "[1 2 3] | wrap num",
+                example: "[ Pachisi Mahjong Catan Carcassonne ] | wrap game",
                 result: Some(Value::test_list(vec![
                     Value::test_record(record! {
-                        "num" => Value::test_int(1),
+                        "game" => Value::test_string("Pachisi"),
                     }),
                     Value::test_record(record! {
-                        "num" => Value::test_int(2),
+                        "game" => Value::test_string("Mahjong"),
                     }),
                     Value::test_record(record! {
-                        "num" => Value::test_int(3),
+                        "game" => Value::test_string("Catan"),
+                    }),
+                    Value::test_record(record! {
+                        "game" => Value::test_string("Carcassonne"),
                     }),
                 ])),
             },
             Example {
                 description: "Wrap a range into a table with a given column name",
-                example: "1..3 | wrap num",
+                example: "4..6 | wrap num",
                 result: Some(Value::test_list(vec![
                     Value::test_record(record! {
-                        "num" => Value::test_int(1),
+                        "num" => Value::test_int(4),
                     }),
                     Value::test_record(record! {
-                        "num" => Value::test_int(2),
+                        "num" => Value::test_int(5),
                     }),
                     Value::test_record(record! {
-                        "num" => Value::test_int(3),
+                        "num" => Value::test_int(6),
                     }),
                 ])),
             },

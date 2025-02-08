@@ -1,22 +1,34 @@
-use super::{usage::Usage, Command, EngineState, OverlayFrame, ScopeFrame, VirtualPath};
-use crate::ast::Block;
-use crate::{Module, Variable};
+use crate::{
+    ast::Block,
+    engine::{
+        description::Doccomments, CachedFile, Command, EngineState, OverlayFrame, ScopeFrame,
+        Variable, VirtualPath,
+    },
+    Module, Span,
+};
+use std::sync::Arc;
+
+#[cfg(feature = "plugin")]
+use crate::{PluginRegistryItem, RegisteredPlugin};
 
 /// A delta (or change set) between the current global state and a possible future global state. Deltas
 /// can be applied to the global state to update it to contain both previous state and the state held
 /// within the delta.
+#[derive(Clone)]
 pub struct StateDelta {
-    pub(super) files: Vec<(String, usize, usize)>,
-    pub(crate) file_contents: Vec<(Vec<u8>, usize, usize)>,
+    pub(super) files: Vec<CachedFile>,
     pub(super) virtual_paths: Vec<(String, VirtualPath)>,
     pub(super) vars: Vec<Variable>,          // indexed by VarId
     pub(super) decls: Vec<Box<dyn Command>>, // indexed by DeclId
-    pub blocks: Vec<Block>,                  // indexed by BlockId
-    pub(super) modules: Vec<Module>,         // indexed by ModuleId
-    pub(super) usage: Usage,
+    pub blocks: Vec<Arc<Block>>,             // indexed by BlockId
+    pub(super) modules: Vec<Arc<Module>>,    // indexed by ModuleId
+    pub spans: Vec<Span>,                    // indexed by SpanId
+    pub(super) doccomments: Doccomments,
     pub scope: Vec<ScopeFrame>,
     #[cfg(feature = "plugin")]
-    pub(super) plugins_changed: bool, // marks whether plugin file should be updated
+    pub(super) plugins: Vec<Arc<dyn RegisteredPlugin>>,
+    #[cfg(feature = "plugin")]
+    pub(super) plugin_registry_items: Vec<PluginRegistryItem>,
 }
 
 impl StateDelta {
@@ -30,16 +42,18 @@ impl StateDelta {
 
         StateDelta {
             files: vec![],
-            file_contents: vec![],
             virtual_paths: vec![],
             vars: vec![],
             decls: vec![],
             blocks: vec![],
             modules: vec![],
+            spans: vec![],
             scope: vec![scope_frame],
-            usage: Usage::new(),
+            doccomments: Doccomments::new(),
             #[cfg(feature = "plugin")]
-            plugins_changed: false,
+            plugins: vec![],
+            #[cfg(feature = "plugin")]
+            plugin_registry_items: vec![],
         }
     }
 
@@ -49,6 +63,10 @@ impl StateDelta {
 
     pub fn num_virtual_paths(&self) -> usize {
         self.virtual_paths.len()
+    }
+
+    pub fn num_vars(&self) -> usize {
+        self.vars.len()
     }
 
     pub fn num_decls(&self) -> usize {
@@ -85,7 +103,7 @@ impl StateDelta {
             Some(
                 &mut last_scope
                     .overlays
-                    .get_mut(*last_overlay_id)
+                    .get_mut(last_overlay_id.get())
                     .expect("internal error: missing required overlay")
                     .1,
             )
@@ -104,7 +122,7 @@ impl StateDelta {
             Some(
                 &last_scope
                     .overlays
-                    .get(*last_overlay_id)
+                    .get(last_overlay_id.get())
                     .expect("internal error: missing required overlay")
                     .1,
             )
@@ -121,7 +139,7 @@ impl StateDelta {
         self.scope.pop();
     }
 
-    pub fn get_file_contents(&self) -> &[(Vec<u8>, usize, usize)] {
-        &self.file_contents
+    pub fn get_file_contents(&self) -> &[CachedFile] {
+        &self.files
     }
 }

@@ -1,12 +1,6 @@
+use crate::math::{avg::average, utils::run_with_function};
+use nu_engine::command_prelude::*;
 use std::cmp::Ordering;
-
-use crate::math::avg::average;
-use crate::math::utils::run_with_function;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
-};
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -22,13 +16,15 @@ impl Command for SubCommand {
                 (Type::List(Box::new(Type::Number)), Type::Number),
                 (Type::List(Box::new(Type::Duration)), Type::Duration),
                 (Type::List(Box::new(Type::Filesize)), Type::Filesize),
-                (Type::Table(vec![]), Type::Record(vec![])),
+                (Type::Range, Type::Number),
+                (Type::table(), Type::record()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Computes the median of a list of numbers."
     }
 
@@ -36,10 +32,23 @@ impl Command for SubCommand {
         vec!["middle", "statistics"]
     }
 
+    fn is_const(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         _engine_state: &EngineState,
         _stack: &mut Stack,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        run_with_function(call, input, median)
+    }
+
+    fn run_const(
+        &self,
+        _working_set: &StateWorkingSet,
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
@@ -60,6 +69,11 @@ impl Command for SubCommand {
                     "a" => Value::test_int(1),
                     "b" => Value::test_int(3),
                 })),
+            },
+            Example {
+                description: "Find the median of a list of file sizes",
+                example: "[5KB 10MB 200B] | math median",
+                result: Some(Value::test_filesize(5 * 1_000)),
             },
         ]
     }

@@ -1,13 +1,10 @@
+use nu_glob::MatchOptions;
+use nu_path::{canonicalize_with, expand_path_with};
+use nu_protocol::{shell_error::io::IoError, NuGlob, ShellError, Span, Spanned};
 use std::{
     fs,
     path::{Component, Path, PathBuf},
 };
-
-use nu_glob::MatchOptions;
-use nu_path::{canonicalize_with, expand_path_with};
-use nu_protocol::{ShellError, Span, Spanned};
-
-const GLOB_CHARS: &[char] = &['*', '?', '['];
 
 /// This function is like `nu_glob::glob` from the `glob` crate, except it is relative to a given cwd.
 ///
@@ -18,7 +15,7 @@ const GLOB_CHARS: &[char] = &['*', '?', '['];
 /// The second of the two values is an iterator over the matching filepaths.
 #[allow(clippy::type_complexity)]
 pub fn glob_from(
-    pattern: &Spanned<String>,
+    pattern: &Spanned<NuGlob>,
     cwd: &Path,
     span: Span,
     options: Option<MatchOptions>,
@@ -29,16 +26,18 @@ pub fn glob_from(
     ),
     ShellError,
 > {
-    let (prefix, pattern) = if pattern.item.contains(GLOB_CHARS) {
+    let no_glob_for_pattern = matches!(pattern.item, NuGlob::DoNotExpand(_));
+    let pattern_span = pattern.span;
+    let (prefix, pattern) = if nu_glob::is_glob(pattern.item.as_ref()) {
         // Pattern contains glob, split it
         let mut p = PathBuf::new();
-        let path = PathBuf::from(&pattern.item);
+        let path = PathBuf::from(&pattern.item.as_ref());
         let components = path.components();
         let mut counter = 0;
 
         for c in components {
             if let Component::Normal(os) = c {
-                if os.to_string_lossy().contains(GLOB_CHARS) {
+                if nu_glob::is_glob(os.to_string_lossy().as_ref()) {
                     break;
                 }
             }
@@ -52,15 +51,18 @@ pub fn glob_from(
                 just_pattern.push(comp);
             }
         }
+        if no_glob_for_pattern {
+            just_pattern = PathBuf::from(nu_glob::Pattern::escape(&just_pattern.to_string_lossy()));
+        }
 
         // Now expand `p` to get full prefix
-        let path = expand_path_with(p, cwd);
+        let path = expand_path_with(p, cwd, pattern.item.is_expand());
         let escaped_prefix = PathBuf::from(nu_glob::Pattern::escape(&path.to_string_lossy()));
 
         (Some(path), escaped_prefix.join(just_pattern))
     } else {
-        let path = PathBuf::from(&pattern.item);
-        let path = expand_path_with(path, cwd);
+        let path = PathBuf::from(&pattern.item.as_ref());
+        let path = expand_path_with(path, cwd, pattern.item.is_expand());
         let is_symlink = match fs::symlink_metadata(&path) {
             Ok(attr) => attr.file_type().is_symlink(),
             Err(_) => false,
@@ -69,13 +71,17 @@ pub fn glob_from(
         if is_symlink {
             (path.parent().map(|parent| parent.to_path_buf()), path)
         } else {
-            let path = if let Ok(p) = canonicalize_with(path.clone(), cwd) {
-                p
-            } else {
-                return Err(ShellError::DirectoryNotFound {
-                    dir: path.to_string_lossy().to_string(),
-                    span: pattern.span,
-                });
+            let path = match canonicalize_with(path.clone(), cwd) {
+                Ok(p) if nu_glob::is_glob(p.to_string_lossy().as_ref()) => {
+                    // our path might contain glob metacharacters too.
+                    // in such case, we need to escape our path to make
+                    // glob work successfully
+                    PathBuf::from(nu_glob::Pattern::escape(&p.to_string_lossy()))
+                }
+                Ok(p) => p,
+                Err(err) => {
+                    return Err(IoError::new(err.kind(), pattern_span, path).into());
+                }
             };
             (path.parent().map(|parent| parent.to_path_buf()), path)
         }

@@ -1,10 +1,5 @@
 use nu_cmd_base::input_handler::{operate, CmdArgument};
-use nu_engine::CallExt;
-use nu_protocol::ast::{Call, CellPath};
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 struct Arguments {
     pattern: Vec<u8>,
@@ -30,12 +25,11 @@ impl Command for BytesIndexOf {
     fn signature(&self) -> Signature {
         Signature::build("bytes index-of")
             .input_output_types(vec![
-                (Type::Binary, Type::Int),
-                (Type::Binary, Type::List(Box::new(Type::Int))),
+                (Type::Binary, Type::Any),
                 // FIXME: this shouldn't be needed, cell paths should work with the two
                 // above
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (Type::Record(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::table()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .required(
@@ -53,7 +47,7 @@ impl Command for BytesIndexOf {
             .category(Category::Bytes)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns start index of first occurrence of pattern in bytes, or -1 if no match."
     }
 
@@ -77,7 +71,7 @@ impl Command for BytesIndexOf {
             all: call.has_flag(engine_state, stack, "all")?,
             cell_paths,
         };
-        operate(index_of, arg, input, call.head, engine_state.ctrlc.clone())
+        operate(index_of, arg, input, call.head, engine_state.signals())
     }
 
     fn examples(&self) -> Vec<Example> {

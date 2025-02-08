@@ -1,12 +1,6 @@
 use nu_cmd_base::input_handler::{operate, CmdArgument};
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::ast::CellPath;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::record;
-use nu_protocol::{
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+
 use nu_utils::IgnoreCaseExt;
 
 #[derive(Clone)]
@@ -16,7 +10,6 @@ struct Arguments {
     substring: String,
     cell_paths: Option<Vec<CellPath>>,
     case_insensitive: bool,
-    not_contain: bool,
 }
 
 impl CmdArgument for Arguments {
@@ -35,8 +28,8 @@ impl Command for SubCommand {
             .input_output_types(vec![
                 (Type::String, Type::Bool),
                 // TODO figure out cell-path type behavior
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (Type::Record(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::table()),
+                (Type::record(), Type::record()),
                 (Type::List(Box::new(Type::String)), Type::List(Box::new(Type::Bool)))
             ])
             .required("string", SyntaxShape::String, "The substring to find.")
@@ -46,16 +39,19 @@ impl Command for SubCommand {
                 "For a data structure input, check strings at the given cell paths, and replace with result.",
             )
             .switch("ignore-case", "search is case insensitive", Some('i'))
-            .switch("not", "does not contain", Some('n'))
             .category(Category::Strings)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Checks if string input contains a substring."
     }
 
     fn search_terms(&self) -> Vec<&str> {
         vec!["substring", "match", "find", "search"]
+    }
+
+    fn is_const(&self) -> bool {
+        true
     }
 
     fn run(
@@ -71,9 +67,30 @@ impl Command for SubCommand {
             substring: call.req::<String>(engine_state, stack, 0)?,
             cell_paths,
             case_insensitive: call.has_flag(engine_state, stack, "ignore-case")?,
-            not_contain: call.has_flag(engine_state, stack, "not")?,
         };
-        operate(action, args, input, call.head, engine_state.ctrlc.clone())
+        operate(action, args, input, call.head, engine_state.signals())
+    }
+
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let cell_paths: Vec<CellPath> = call.rest_const(working_set, 1)?;
+        let cell_paths = (!cell_paths.is_empty()).then_some(cell_paths);
+        let args = Arguments {
+            substring: call.req_const::<String>(working_set, 0)?,
+            cell_paths,
+            case_insensitive: call.has_flag_const(working_set, "ignore-case")?,
+        };
+        operate(
+            action,
+            args,
+            input,
+            call.head,
+            working_set.permanent().signals(),
+        )
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -126,15 +143,6 @@ impl Command for SubCommand {
                     Value::test_bool(false),
                 ])),
             },
-            Example {
-                description: "Check if list does not contain string",
-                example: "[one two three] | str contains --not o",
-                result: Some(Value::test_list(vec![
-                    Value::test_bool(false),
-                    Value::test_bool(false),
-                    Value::test_bool(true),
-                ])),
-            },
         ]
     }
 }
@@ -143,7 +151,6 @@ fn action(
     input: &Value,
     Arguments {
         case_insensitive,
-        not_contain,
         substring,
         ..
     }: &Arguments,
@@ -151,23 +158,11 @@ fn action(
 ) -> Value {
     match input {
         Value::String { val, .. } => Value::bool(
-            match case_insensitive {
-                true => {
-                    if *not_contain {
-                        !val.to_folded_case()
-                            .contains(substring.to_folded_case().as_str())
-                    } else {
-                        val.to_folded_case()
-                            .contains(substring.to_folded_case().as_str())
-                    }
-                }
-                false => {
-                    if *not_contain {
-                        !val.contains(substring)
-                    } else {
-                        val.contains(substring)
-                    }
-                }
+            if *case_insensitive {
+                val.to_folded_case()
+                    .contains(substring.to_folded_case().as_str())
+            } else {
+                val.contains(substring)
             },
             head,
         ),

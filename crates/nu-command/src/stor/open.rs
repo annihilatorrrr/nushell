@@ -1,9 +1,6 @@
 use crate::database::{SQLiteDatabase, MEMORY_DB};
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Type,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::Signals;
 
 #[derive(Clone)]
 pub struct StorOpen;
@@ -23,7 +20,7 @@ impl Command for StorOpen {
             .category(Category::Database)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Opens the in-memory sqlite database."
     }
 
@@ -58,7 +55,10 @@ impl Command for StorOpen {
         //   It returns the output of `select * from my_table_name`
 
         // Just create an empty database with MEMORY_DB and nothing else
-        let db = Box::new(SQLiteDatabase::new(std::path::Path::new(MEMORY_DB), None));
+        let db = Box::new(SQLiteDatabase::new(
+            std::path::Path::new(MEMORY_DB),
+            Signals::empty(),
+        ));
 
         // dbg!(db.clone());
         Ok(db.into_value(call.head).into_pipeline_data())

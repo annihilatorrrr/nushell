@@ -1,66 +1,131 @@
+#[cfg(unix)]
+use std::io::prelude::*;
 use std::{
+    io,
     process::{Child, Command},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicU32, Arc},
 };
 
-/// A simple wrapper for `std::process::Command`
+use crate::ExitStatus;
+
+#[cfg(unix)]
+use std::{io::IsTerminal, sync::atomic::Ordering};
+
+#[cfg(unix)]
+pub use foreground_pgroup::stdin_fd;
+
+#[cfg(unix)]
+use nix::{sys::signal, sys::wait, unistd::Pid};
+
+/// A simple wrapper for [`std::process::Child`]
 ///
-/// ## Spawn behavior
-/// ### Unix
+/// It can only be created by [`ForegroundChild::spawn`].
 ///
-/// The spawned child process will get its own process group id, and it's going to foreground (by making stdin belong's to child's process group).
+/// # Spawn behavior
+/// ## Unix
 ///
+/// For interactive shells, the spawned child process will get its own process group id,
+/// and it will be put in the foreground (by making stdin belong to the child's process group).
 /// On drop, the calling process's group will become the foreground process group once again.
 ///
-/// ### Windows
-/// It does nothing special on windows system, `spawn` is the same as [std::process::Command::spawn](std::process::Command::spawn)
-pub struct ForegroundProcess {
-    inner: Command,
-    pipeline_state: Arc<(AtomicU32, AtomicU32)>,
-}
-
-/// A simple wrapper for `std::process::Child`
+/// For non-interactive mode, processes are spawned normally without any foreground process handling.
 ///
-/// It can only be created by `ForegroundProcess::spawn`.
+/// ## Other systems
+///
+/// It does nothing special on non-unix systems, so `spawn` is the same as [`std::process::Command::spawn`].
 pub struct ForegroundChild {
     inner: Child,
-    pipeline_state: Arc<(AtomicU32, AtomicU32)>,
-    interactive: bool,
+    #[cfg(unix)]
+    pipeline_state: Option<Arc<(AtomicU32, AtomicU32)>>,
 }
 
-impl ForegroundProcess {
-    pub fn new(cmd: Command, pipeline_state: Arc<(AtomicU32, AtomicU32)>) -> Self {
-        Self {
-            inner: cmd,
-            pipeline_state,
+impl ForegroundChild {
+    #[cfg(not(unix))]
+    pub fn spawn(mut command: Command) -> io::Result<Self> {
+        command.spawn().map(|child| Self { inner: child })
+    }
+
+    #[cfg(unix)]
+    pub fn spawn(
+        mut command: Command,
+        interactive: bool,
+        pipeline_state: &Arc<(AtomicU32, AtomicU32)>,
+    ) -> io::Result<Self> {
+        if interactive && io::stdin().is_terminal() {
+            let (pgrp, pcnt) = pipeline_state.as_ref();
+            let existing_pgrp = pgrp.load(Ordering::SeqCst);
+            foreground_pgroup::prepare_command(&mut command, existing_pgrp);
+            command
+                .spawn()
+                .map(|child| {
+                    foreground_pgroup::set(&child, existing_pgrp);
+                    let _ = pcnt.fetch_add(1, Ordering::SeqCst);
+                    if existing_pgrp == 0 {
+                        pgrp.store(child.id(), Ordering::SeqCst);
+                    }
+                    Self {
+                        inner: child,
+                        pipeline_state: Some(pipeline_state.clone()),
+                    }
+                })
+                .inspect_err(|_e| {
+                    foreground_pgroup::reset();
+                })
+        } else {
+            command.spawn().map(|child| Self {
+                inner: child,
+                pipeline_state: None,
+            })
         }
     }
 
-    pub fn spawn(&mut self, interactive: bool) -> std::io::Result<ForegroundChild> {
-        let (ref pgrp, ref pcnt) = *self.pipeline_state;
-        let existing_pgrp = pgrp.load(Ordering::SeqCst);
-        fg_process_setup::prepare_to_foreground(&mut self.inner, existing_pgrp, interactive);
-        self.inner
-            .spawn()
-            .map(|child| {
-                fg_process_setup::set_foreground(&child, existing_pgrp, interactive);
-                let _ = pcnt.fetch_add(1, Ordering::SeqCst);
-                if existing_pgrp == 0 {
-                    pgrp.store(child.id(), Ordering::SeqCst);
-                }
-                ForegroundChild {
-                    inner: child,
-                    pipeline_state: self.pipeline_state.clone(),
-                    interactive,
-                }
-            })
-            .map_err(|e| {
-                fg_process_setup::reset_foreground_id(interactive);
-                e
-            })
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        #[cfg(unix)]
+        {
+            // the child may be stopped multiple times, we loop until it exits
+            loop {
+                let child_pid = Pid::from_raw(self.inner.id() as i32);
+                let status = wait::waitpid(child_pid, Some(wait::WaitPidFlag::WUNTRACED));
+                match status {
+                    Err(e) => {
+                        drop(self.inner.stdin.take());
+                        return Err(e.into());
+                    }
+                    Ok(wait::WaitStatus::Exited(_, status)) => {
+                        drop(self.inner.stdin.take());
+                        return Ok(ExitStatus::Exited(status));
+                    }
+                    Ok(wait::WaitStatus::Signaled(_, signal, core_dumped)) => {
+                        drop(self.inner.stdin.take());
+                        return Ok(ExitStatus::Signaled {
+                            signal: signal as i32,
+                            core_dumped,
+                        });
+                    }
+                    Ok(wait::WaitStatus::Stopped(_, _)) => {
+                        println!("nushell currently does not support background jobs");
+                        // acquire terminal in order to be able to read from stdin
+                        foreground_pgroup::reset();
+                        let mut stdin = io::stdin();
+                        let mut stdout = io::stdout();
+                        write!(stdout, "press any key to continue")?;
+                        stdout.flush()?;
+                        stdin.read_exact(&mut [0u8])?;
+                        // bring child's pg back into foreground and continue it
+                        if let Some(state) = self.pipeline_state.as_ref() {
+                            let existing_pgrp = state.0.load(Ordering::SeqCst);
+                            foreground_pgroup::set(&self.inner, existing_pgrp);
+                        }
+                        signal::killpg(child_pid, signal::SIGCONT)?;
+                    }
+                    Ok(_) => {
+                        // keep waiting
+                    }
+                };
+            }
+        }
+        #[cfg(not(unix))]
+        self.as_mut().wait().map(Into::into)
     }
 }
 
@@ -70,122 +135,235 @@ impl AsMut<Child> for ForegroundChild {
     }
 }
 
+#[cfg(unix)]
 impl Drop for ForegroundChild {
     fn drop(&mut self) {
-        let (ref pgrp, ref pcnt) = *self.pipeline_state;
-        if pcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
-            pgrp.store(0, Ordering::SeqCst);
-            fg_process_setup::reset_foreground_id(self.interactive)
+        if let Some((pgrp, pcnt)) = self.pipeline_state.as_deref() {
+            if pcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
+                pgrp.store(0, Ordering::SeqCst);
+                foreground_pgroup::reset()
+            }
         }
+    }
+}
+
+/// Keeps a specific already existing process in the foreground as long as the [`ForegroundGuard`].
+/// If the process needs to be spawned in the foreground, use [`ForegroundChild`] instead. This is
+/// used to temporarily bring plugin processes into the foreground.
+///
+/// # OS-specific behavior
+/// ## Unix
+///
+/// If there is already a foreground external process running, spawned with [`ForegroundChild`],
+/// this expects the process ID to remain in the process group created by the [`ForegroundChild`]
+/// for the lifetime of the guard, and keeps the terminal controlling process group set to that.
+/// If there is no foreground external process running, this sets the foreground process group to
+/// the plugin's process ID. The process group that is expected can be retrieved with
+/// [`.pgrp()`](Self::pgrp) if different from the plugin process ID.
+///
+/// ## Other systems
+///
+/// It does nothing special on non-unix systems.
+#[derive(Debug)]
+pub struct ForegroundGuard {
+    #[cfg(unix)]
+    pgrp: Option<u32>,
+    #[cfg(unix)]
+    pipeline_state: Arc<(AtomicU32, AtomicU32)>,
+}
+
+impl ForegroundGuard {
+    /// Move the given process to the foreground.
+    #[cfg(unix)]
+    pub fn new(
+        pid: u32,
+        pipeline_state: &Arc<(AtomicU32, AtomicU32)>,
+    ) -> std::io::Result<ForegroundGuard> {
+        use nix::unistd::{self, Pid};
+
+        let pid_nix = Pid::from_raw(pid as i32);
+        let (pgrp, pcnt) = pipeline_state.as_ref();
+
+        // Might have to retry due to race conditions on the atomics
+        loop {
+            // Try to give control to the child, if there isn't currently a foreground group
+            if pgrp
+                .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let _ = pcnt.fetch_add(1, Ordering::SeqCst);
+
+                // We don't need the child to change process group. Make the guard now so that if there
+                // is an error, it will be cleaned up
+                let guard = ForegroundGuard {
+                    pgrp: None,
+                    pipeline_state: pipeline_state.clone(),
+                };
+
+                log::trace!("Giving control of the terminal to the plugin group, pid={pid}");
+
+                // Set the terminal controlling process group to the child process
+                unistd::tcsetpgrp(unsafe { stdin_fd() }, pid_nix)?;
+
+                return Ok(guard);
+            } else if pcnt
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    // Avoid a race condition: only increment if count is > 0
+                    if count > 0 {
+                        Some(count + 1)
+                    } else {
+                        None
+                    }
+                })
+                .is_ok()
+            {
+                // We successfully added another count to the foreground process group, which means
+                // we only need to tell the child process to join this one
+                let pgrp = pgrp.load(Ordering::SeqCst);
+                log::trace!(
+                    "Will ask the plugin pid={pid} to join pgrp={pgrp} for control of the \
+                    terminal"
+                );
+                return Ok(ForegroundGuard {
+                    pgrp: Some(pgrp),
+                    pipeline_state: pipeline_state.clone(),
+                });
+            } else {
+                // The state has changed, we'll have to retry
+                continue;
+            }
+        }
+    }
+
+    /// Move the given process to the foreground.
+    #[cfg(not(unix))]
+    pub fn new(
+        pid: u32,
+        pipeline_state: &Arc<(AtomicU32, AtomicU32)>,
+    ) -> std::io::Result<ForegroundGuard> {
+        let _ = (pid, pipeline_state);
+        Ok(ForegroundGuard {})
+    }
+
+    /// If the child process is expected to join a different process group to be in the foreground,
+    /// this returns `Some(pgrp)`. This only ever returns `Some` on Unix.
+    pub fn pgrp(&self) -> Option<u32> {
+        #[cfg(unix)]
+        {
+            self.pgrp
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    /// This should only be called once by `Drop`
+    fn reset_internal(&mut self) {
+        #[cfg(unix)]
+        {
+            log::trace!("Leaving the foreground group");
+
+            let (pgrp, pcnt) = self.pipeline_state.as_ref();
+            if pcnt.fetch_sub(1, Ordering::SeqCst) == 1 {
+                // Clean up if we are the last one around
+                pgrp.store(0, Ordering::SeqCst);
+                foreground_pgroup::reset()
+            }
+        }
+    }
+}
+
+impl Drop for ForegroundGuard {
+    fn drop(&mut self) {
+        self.reset_internal();
     }
 }
 
 // It's a simpler version of fish shell's external process handling.
 #[cfg(unix)]
-mod fg_process_setup {
+mod foreground_pgroup {
     use nix::{
-        sys::signal,
+        sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
         unistd::{self, Pid},
     };
-    use std::io::IsTerminal;
-    use std::os::unix::prelude::{CommandExt, RawFd};
+    use std::{
+        os::{
+            fd::{AsFd, BorrowedFd},
+            unix::prelude::CommandExt,
+        },
+        process::{Child, Command},
+    };
 
-    // TODO: when raising MSRV past 1.63.0, switch to OwnedFd
-    struct TtyHandle(RawFd);
-
-    impl Drop for TtyHandle {
-        fn drop(&mut self) {
-            let _ = unistd::close(self.0);
-        }
+    /// Alternative to having to call `std::io::stdin()` just to get the file descriptor of stdin
+    ///
+    /// # Safety
+    /// I/O safety of reading from `STDIN_FILENO` unclear.
+    ///
+    /// Currently only intended to access `tcsetpgrp` and `tcgetpgrp` with the I/O safe `nix`
+    /// interface.
+    pub unsafe fn stdin_fd() -> impl AsFd {
+        unsafe { BorrowedFd::borrow_raw(nix::libc::STDIN_FILENO) }
     }
 
-    pub(super) fn prepare_to_foreground(
-        external_command: &mut std::process::Command,
-        existing_pgrp: u32,
-        interactive: bool,
-    ) {
-        let tty = TtyHandle(unistd::dup(nix::libc::STDIN_FILENO).expect("dup"));
-        let interactive = interactive && std::io::stdin().is_terminal();
+    pub fn prepare_command(external_command: &mut Command, existing_pgrp: u32) {
         unsafe {
             // Safety:
             // POSIX only allows async-signal-safe functions to be called.
-            // `sigprocmask`, `setpgid` and `tcsetpgrp` are async-signal-safe according to:
+            // `sigaction` and `getpid` are async-signal-safe according to:
             // https://manpages.ubuntu.com/manpages/bionic/man7/signal-safety.7.html
+            // Also, `set_foreground_pid` is async-signal-safe.
             external_command.pre_exec(move || {
-                // When this callback is run, std::process has already done:
-                // - pthread_sigmask(SIG_SETMASK) with an empty sigset
-                // - signal(SIGPIPE, SIG_DFL)
-                // However, we do need TTOU/TTIN blocked again during this setup.
-                let mut sigset = signal::SigSet::empty();
-                sigset.add(signal::Signal::SIGTSTP);
-                sigset.add(signal::Signal::SIGTTOU);
-                sigset.add(signal::Signal::SIGTTIN);
-                sigset.add(signal::Signal::SIGCHLD);
-                signal::sigprocmask(signal::SigmaskHow::SIG_BLOCK, Some(&sigset), None)
-                    .expect("signal mask");
+                // When this callback is run, std::process has already:
+                // - reset SIGPIPE to SIG_DFL
 
                 // According to glibc's job control manual:
                 // https://www.gnu.org/software/libc/manual/html_node/Launching-Jobs.html
                 // This has to be done *both* in the parent and here in the child due to race conditions.
-                if interactive {
-                    set_foreground_pid(unistd::getpid(), existing_pgrp, tty.0);
-                }
+                set_foreground_pid(Pid::this(), existing_pgrp);
 
-                // Now let the child process have all the signals by resetting with SIG_SETMASK.
-                let mut sigset = signal::SigSet::empty();
-                sigset.add(signal::Signal::SIGTSTP); // for now not really all: we don't support background jobs, so keep this one blocked
-                signal::sigprocmask(signal::SigmaskHow::SIG_SETMASK, Some(&sigset), None)
-                    .expect("signal mask");
+                // Reset signal handlers for child, sync with `terminal.rs`
+                let default = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+                // SIGINT has special handling
+                let _ = sigaction(Signal::SIGQUIT, &default);
+                // We don't support background jobs, so keep some signals blocked for now
+                // let _ = sigaction(Signal::SIGTTIN, &default);
+                // let _ = sigaction(Signal::SIGTTOU, &default);
+                // We do need to reset SIGTSTP though, since some TUI
+                // applications implement their own Ctrl-Z handling, and
+                // ForegroundChild::wait() needs to be able to react to the
+                // child being stopped.
+                let _ = sigaction(Signal::SIGTSTP, &default);
+                let _ = sigaction(Signal::SIGTERM, &default);
 
                 Ok(())
             });
         }
     }
 
-    pub(super) fn set_foreground(
-        process: &std::process::Child,
-        existing_pgrp: u32,
-        interactive: bool,
-    ) {
-        // called from the parent shell process - do the stdin tty check here
-        if interactive && std::io::stdin().is_terminal() {
-            set_foreground_pid(
-                Pid::from_raw(process.id() as i32),
-                existing_pgrp,
-                nix::libc::STDIN_FILENO,
-            );
-        }
+    pub fn set(process: &Child, existing_pgrp: u32) {
+        set_foreground_pid(Pid::from_raw(process.id() as i32), existing_pgrp);
     }
 
-    // existing_pgrp is 0 when we don't have an existing foreground process in the pipeline.
-    // Conveniently, 0 means "current pid" to setpgid. But not to tcsetpgrp.
-    fn set_foreground_pid(pid: Pid, existing_pgrp: u32, tty: RawFd) {
-        let _ = unistd::setpgid(pid, Pid::from_raw(existing_pgrp as i32));
-        let _ = unistd::tcsetpgrp(
-            tty,
-            if existing_pgrp == 0 {
-                pid
-            } else {
-                Pid::from_raw(existing_pgrp as i32)
-            },
-        );
+    fn set_foreground_pid(pid: Pid, existing_pgrp: u32) {
+        // Safety: needs to be async-signal-safe.
+        // `setpgid` and `tcsetpgrp` are async-signal-safe.
+
+        // `existing_pgrp` is 0 when we don't have an existing foreground process in the pipeline.
+        // A pgrp of 0 means the calling process's pid for `setpgid`. But not for `tcsetpgrp`.
+        let pgrp = if existing_pgrp == 0 {
+            pid
+        } else {
+            Pid::from_raw(existing_pgrp as i32)
+        };
+        let _ = unistd::setpgid(pid, pgrp);
+        let _ = unistd::tcsetpgrp(unsafe { stdin_fd() }, pgrp);
     }
 
     /// Reset the foreground process group to the shell
-    pub(super) fn reset_foreground_id(interactive: bool) {
-        if interactive && std::io::stdin().is_terminal() {
-            if let Err(e) = nix::unistd::tcsetpgrp(nix::libc::STDIN_FILENO, unistd::getpgrp()) {
-                println!("ERROR: reset foreground id failed, tcsetpgrp result: {e:?}");
-            }
+    pub fn reset() {
+        if let Err(e) = unistd::tcsetpgrp(unsafe { stdin_fd() }, unistd::getpgrp()) {
+            eprintln!("ERROR: reset foreground id failed, tcsetpgrp result: {e:?}");
         }
     }
-}
-
-#[cfg(not(unix))]
-mod fg_process_setup {
-    pub(super) fn prepare_to_foreground(_: &mut std::process::Command, _: u32, _: bool) {}
-
-    pub(super) fn set_foreground(_: &std::process::Child, _: u32, _: bool) {}
-
-    pub(super) fn reset_foreground_id(_: bool) {}
 }

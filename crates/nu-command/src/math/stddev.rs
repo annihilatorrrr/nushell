@@ -1,9 +1,6 @@
 use super::variance::compute_variance as variance;
 use crate::math::utils::run_with_function;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -15,16 +12,21 @@ impl Command for SubCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("math stddev")
-            .input_output_types(vec![(Type::List(Box::new(Type::Number)), Type::Number)])
+            .input_output_types(vec![
+                (Type::List(Box::new(Type::Number)), Type::Number),
+                (Type::table(), Type::record()),
+                (Type::record(), Type::record()),
+            ])
             .switch(
                 "sample",
                 "calculate sample standard deviation (i.e. using N-1 as the denominator)",
                 Some('s'),
             )
+            .allow_variants_without_examples(true)
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns the standard deviation of a list of numbers, or of each column in a table."
     }
 
@@ -39,6 +41,10 @@ impl Command for SubCommand {
         ]
     }
 
+    fn is_const(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         engine_state: &EngineState,
@@ -47,6 +53,16 @@ impl Command for SubCommand {
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let sample = call.has_flag(engine_state, stack, "sample")?;
+        run_with_function(call, input, compute_stddev(sample))
+    }
+
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let sample = call.has_flag_const(working_set, "sample")?;
         run_with_function(call, input, compute_stddev(sample))
     }
 
@@ -61,6 +77,14 @@ impl Command for SubCommand {
                 description: "Compute the sample standard deviation of a list of numbers",
                 example: "[1 2 3 4 5] | math stddev --sample",
                 result: Some(Value::test_float(1.5811388300841898)),
+            },
+            Example {
+                description: "Compute the standard deviation of each column in a table",
+                example: "[[a b]; [1 2] [3 4]] | math stddev",
+                result: Some(Value::test_record(record! {
+                    "a" => Value::test_int(1),
+                    "b" => Value::test_int(1),
+                })),
             },
         ]
     }

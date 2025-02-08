@@ -109,6 +109,24 @@ fn const_string() {
 }
 
 #[test]
+fn const_string_interpolation_var() {
+    let actual = nu!(r#"const x = 2; const s = $"($x)"; $s"#);
+    assert_eq!(actual.out, "2");
+}
+
+#[test]
+fn const_string_interpolation_date() {
+    let actual = nu!(r#"const s = $"(2021-02-27T13:55:40+00:00)"; $s"#);
+    assert!(actual.out.contains("Sat, 27 Feb 2021 13:55:40 +0000"));
+}
+
+#[test]
+fn const_string_interpolation_filesize() {
+    let actual = nu!(r#"const s = $"(2kB)"; $s"#);
+    assert_eq!(actual.out, "2.0 kB");
+}
+
+#[test]
 fn const_nothing() {
     let inp = &["const x = null", "$x | describe"];
 
@@ -136,7 +154,6 @@ fn const_unary_operator(#[case] inp: &[&str], #[case] expect: &str) {
 #[case(&[r#"const x = "a" ++ "b" "#, "$x"], "ab")]
 #[case(&[r#"const x = [1,2] ++ [3]"#, "$x | describe"], "list<int>")]
 #[case(&[r#"const x = 0x[1,2] ++ 0x[3]"#, "$x | describe"], "binary")]
-#[case(&[r#"const x = 0x[1,2] ++ [3]"#, "$x | describe"], "list<any>")]
 #[case(&["const x = 1 < 2", "$x"], "true")]
 #[case(&["const x = (3 * 200) > (2 * 100)", "$x"], "true")]
 #[case(&["const x = (3 * 200) < (2 * 100)", "$x"], "false")]
@@ -220,13 +237,30 @@ fn complex_const_export() {
     let actual = nu!(&inp.join("; "));
     assert_eq!(actual.out, "eats");
 
-    let inp = &[
-        MODULE_SETUP,
-        "use spam",
-        "($spam.eggs.bacon.none | is-empty)",
-    ];
+    let inp = &[MODULE_SETUP, "use spam", "'none' in $spam.eggs.bacon"];
     let actual = nu!(&inp.join("; "));
-    assert_eq!(actual.out, "true");
+    assert_eq!(actual.out, "false");
+}
+
+#[test]
+fn only_nested_module_have_const() {
+    let setup = r#"
+        module spam {
+            export module eggs {
+                export module bacon {
+                    export const viking = 'eats'
+                    export module none {}
+                }
+            }
+        }
+    "#;
+    let inp = &[setup, "use spam", "$spam.eggs.bacon.viking"];
+    let actual = nu!(&inp.join("; "));
+    assert_eq!(actual.out, "eats");
+
+    let inp = &[setup, "use spam", "'none' in $spam.eggs.bacon"];
+    let actual = nu!(&inp.join("; "));
+    assert_eq!(actual.out, "false");
 }
 
 #[test]
@@ -243,20 +277,16 @@ fn complex_const_glob_export() {
     let actual = nu!(&inp.join("; "));
     assert_eq!(actual.out, "eats");
 
-    let inp = &[MODULE_SETUP, "use spam *", "($eggs.bacon.none | is-empty)"];
+    let inp = &[MODULE_SETUP, "use spam *", "'none' in $eggs.bacon"];
     let actual = nu!(&inp.join("; "));
-    assert_eq!(actual.out, "true");
+    assert_eq!(actual.out, "false");
 }
 
 #[test]
 fn complex_const_drill_export() {
-    let inp = &[
-        MODULE_SETUP,
-        "use spam eggs bacon none",
-        "($none | is-empty)",
-    ];
+    let inp = &[MODULE_SETUP, "use spam eggs bacon none", "$none"];
     let actual = nu!(&inp.join("; "));
-    assert_eq!(actual.out, "true");
+    assert!(actual.err.contains("variable not found"));
 }
 
 #[test]
@@ -317,7 +347,7 @@ fn const_captures_in_closures_work() {
     assert_eq!(actual.out, "hello world");
 }
 
-#[ignore = "TODO: Need to fix `overlay hide` to hide the constants brough by `overlay use`"]
+#[ignore = "TODO: Need to fix `overlay hide` to hide the constants brought by `overlay use`"]
 #[test]
 fn complex_const_overlay_use_hide() {
     let inp = &[MODULE_SETUP, "overlay use spam", "$X"];
@@ -375,4 +405,31 @@ fn if_const() {
     let actual =
         nu!("const x = (if 5 < 3 { 'yes!' } else if 4 < 5 { 'no!' } else { 'okay!' }); $x");
     assert_eq!(actual.out, "no!");
+}
+
+#[test]
+fn const_glob_type() {
+    let actual = nu!("const x: glob = 'aa'; $x | describe");
+    assert_eq!(actual.out, "glob");
+}
+
+#[test]
+fn const_raw_string() {
+    let actual = nu!(r#"const x = r#'abcde""fghi"''''jkl'#; $x"#);
+    assert_eq!(actual.out, r#"abcde""fghi"''''jkl"#);
+
+    let actual = nu!(r#"const x = r##'abcde""fghi"''''#jkl'##; $x"#);
+    assert_eq!(actual.out, r#"abcde""fghi"''''#jkl"#);
+
+    let actual = nu!(r#"const x = r###'abcde""fghi"'''##'#jkl'###; $x"#);
+    assert_eq!(actual.out, r#"abcde""fghi"'''##'#jkl"#);
+
+    let actual = nu!(r#"const x = r#'abc'#; $x"#);
+    assert_eq!(actual.out, "abc");
+}
+
+#[test]
+fn const_takes_pipeline() {
+    let actual = nu!(r#"const list = 'bar_baz_quux' | split row '_'; $list | length"#);
+    assert_eq!(actual.out, "3");
 }

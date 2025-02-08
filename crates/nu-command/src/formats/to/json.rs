@@ -1,10 +1,5 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::{Call, PathMember};
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, SyntaxShape, Type,
-    Value,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::{ast::PathMember, PipelineMetadata};
 
 #[derive(Clone)]
 pub struct ToJson;
@@ -30,10 +25,15 @@ impl Command for ToJson {
                 "specify indentation tab quantity",
                 Some('t'),
             )
+            .switch(
+                "serialize",
+                "serialize nushell types that cannot be deserialized",
+                Some('s'),
+            )
             .category(Category::Formats)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Converts table data into JSON text."
     }
 
@@ -45,27 +45,34 @@ impl Command for ToJson {
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let raw = call.has_flag(engine_state, stack, "raw")?;
-        let use_tabs = call.has_flag(engine_state, stack, "tabs")?;
+        let use_tabs = call.get_flag(engine_state, stack, "tabs")?;
+        let indent = call.get_flag(engine_state, stack, "indent")?;
+        let serialize_types = call.has_flag(engine_state, stack, "serialize")?;
 
         let span = call.head;
         // allow ranges to expand and turn into array
         let input = input.try_expand_range()?;
-        let value = input.into_value(span);
-        let json_value = value_to_json_value(&value)?;
+        let value = input.into_value(span)?;
+        let json_value = value_to_json_value(engine_state, &value, serialize_types)?;
 
         let json_result = if raw {
             nu_json::to_string_raw(&json_value)
-        } else if use_tabs {
-            let tab_count: usize = call.get_flag(engine_state, stack, "tabs")?.unwrap_or(1);
+        } else if let Some(tab_count) = use_tabs {
             nu_json::to_string_with_tab_indentation(&json_value, tab_count)
-        } else {
-            let indent: usize = call.get_flag(engine_state, stack, "indent")?.unwrap_or(2);
+        } else if let Some(indent) = indent {
             nu_json::to_string_with_indent(&json_value, indent)
+        } else {
+            nu_json::to_string(&json_value)
         };
 
         match json_result {
             Ok(serde_json_string) => {
-                Ok(Value::string(serde_json_string, span).into_pipeline_data())
+                let res = Value::string(serde_json_string, span);
+                let metadata = PipelineMetadata {
+                    data_source: nu_protocol::DataSource::None,
+                    content_type: Some(mime::APPLICATION_JSON.to_string()),
+                };
+                Ok(PipelineData::Value(res, Some(metadata)))
             }
             _ => Ok(Value::error(
                 ShellError::CantConvert {
@@ -104,17 +111,22 @@ impl Command for ToJson {
     }
 }
 
-pub fn value_to_json_value(v: &Value) -> Result<nu_json::Value, ShellError> {
+pub fn value_to_json_value(
+    engine_state: &EngineState,
+    v: &Value,
+    serialize_types: bool,
+) -> Result<nu_json::Value, ShellError> {
     let span = v.span();
     Ok(match v {
         Value::Bool { val, .. } => nu_json::Value::Bool(*val),
-        Value::Filesize { val, .. } => nu_json::Value::I64(*val),
+        Value::Filesize { val, .. } => nu_json::Value::I64(val.get()),
         Value::Duration { val, .. } => nu_json::Value::I64(*val),
         Value::Date { val, .. } => nu_json::Value::String(val.to_string()),
         Value::Float { val, .. } => nu_json::Value::F64(*val),
         Value::Int { val, .. } => nu_json::Value::I64(*val),
         Value::Nothing { .. } => nu_json::Value::Null,
         Value::String { val, .. } => nu_json::Value::String(val.to_string()),
+        Value::Glob { val, .. } => nu_json::Value::String(val.to_string()),
         Value::CellPath { val, .. } => nu_json::Value::Array(
             val.members
                 .iter()
@@ -125,35 +137,57 @@ pub fn value_to_json_value(v: &Value) -> Result<nu_json::Value, ShellError> {
                 .collect::<Result<Vec<nu_json::Value>, ShellError>>()?,
         ),
 
-        Value::List { vals, .. } => nu_json::Value::Array(json_list(vals)?),
+        Value::List { vals, .. } => {
+            nu_json::Value::Array(json_list(engine_state, vals, serialize_types)?)
+        }
         Value::Error { error, .. } => return Err(*error.clone()),
-        Value::Closure { .. } | Value::Block { .. } | Value::Range { .. } => nu_json::Value::Null,
+        Value::Closure { val, .. } => {
+            if serialize_types {
+                let block = engine_state.get_block(val.block_id);
+                if let Some(span) = block.span {
+                    let contents_bytes = engine_state.get_span_contents(span);
+                    let contents_string = String::from_utf8_lossy(contents_bytes);
+                    nu_json::Value::String(contents_string.to_string())
+                } else {
+                    nu_json::Value::String(format!(
+                        "unable to retrieve block contents for json block_id {}",
+                        val.block_id.get()
+                    ))
+                }
+            } else {
+                nu_json::Value::Null
+            }
+        }
+        Value::Range { .. } => nu_json::Value::Null,
         Value::Binary { val, .. } => {
             nu_json::Value::Array(val.iter().map(|x| nu_json::Value::U64(*x as u64)).collect())
         }
         Value::Record { val, .. } => {
             let mut m = nu_json::Map::new();
-            for (k, v) in val {
-                m.insert(k.clone(), value_to_json_value(v)?);
+            for (k, v) in &**val {
+                m.insert(
+                    k.clone(),
+                    value_to_json_value(engine_state, v, serialize_types)?,
+                );
             }
             nu_json::Value::Object(m)
         }
-        Value::LazyRecord { val, .. } => {
-            let collected = val.collect()?;
-            value_to_json_value(&collected)?
-        }
-        Value::CustomValue { val, .. } => {
+        Value::Custom { val, .. } => {
             let collected = val.to_base_value(span)?;
-            value_to_json_value(&collected)?
+            value_to_json_value(engine_state, &collected, serialize_types)?
         }
     })
 }
 
-fn json_list(input: &[Value]) -> Result<Vec<nu_json::Value>, ShellError> {
+fn json_list(
+    engine_state: &EngineState,
+    input: &[Value],
+    serialize_types: bool,
+) -> Result<Vec<nu_json::Value>, ShellError> {
     let mut out = vec![];
 
     for value in input {
-        out.push(value_to_json_value(value)?);
+        out.push(value_to_json_value(engine_state, value, serialize_types)?);
     }
 
     Ok(out)
@@ -161,6 +195,10 @@ fn json_list(input: &[Value]) -> Result<Vec<nu_json::Value>, ShellError> {
 
 #[cfg(test)]
 mod test {
+    use nu_cmd_lang::eval_pipeline_without_terminal_expression;
+
+    use crate::{Get, Metadata};
+
     use super::*;
 
     #[test]
@@ -168,5 +206,36 @@ mod test {
         use crate::test_examples;
 
         test_examples(ToJson {})
+    }
+
+    #[test]
+    fn test_content_type_metadata() {
+        let mut engine_state = Box::new(EngineState::new());
+        let delta = {
+            // Base functions that are needed for testing
+            // Try to keep this working set small to keep tests running as fast as possible
+            let mut working_set = StateWorkingSet::new(&engine_state);
+
+            working_set.add_decl(Box::new(ToJson {}));
+            working_set.add_decl(Box::new(Metadata {}));
+            working_set.add_decl(Box::new(Get {}));
+
+            working_set.render()
+        };
+
+        engine_state
+            .merge_delta(delta)
+            .expect("Error merging delta");
+
+        let cmd = "{a: 1 b: 2} | to json  | metadata | get content_type";
+        let result = eval_pipeline_without_terminal_expression(
+            cmd,
+            std::env::temp_dir().as_ref(),
+            &mut engine_state,
+        );
+        assert_eq!(
+            Value::test_record(record!("content_type" => Value::test_string("application/json"))),
+            result.expect("There should be a result")
+        );
     }
 }

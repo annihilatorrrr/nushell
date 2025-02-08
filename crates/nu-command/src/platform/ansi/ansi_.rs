@@ -1,13 +1,8 @@
 use nu_ansi_term::*;
-use nu_engine::CallExt;
-use nu_protocol::engine::{EngineState, Stack};
-use nu_protocol::record;
-use nu_protocol::{
-    ast::Call, engine::Command, Category, Example, IntoInterruptiblePipelineData, IntoPipelineData,
-    PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
-use once_cell::sync::Lazy;
+use nu_engine::command_prelude::*;
+use nu_protocol::{engine::StateWorkingSet, Signals};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 #[derive(Clone)]
 pub struct AnsiCommand;
@@ -19,7 +14,7 @@ struct AnsiCode {
 }
 
 #[rustfmt::skip]
-static CODE_LIST: Lazy<Vec<AnsiCode>> = Lazy::new(|| { vec![
+static CODE_LIST: LazyLock<Vec<AnsiCode>> = LazyLock::new(|| { vec![
     AnsiCode{ short_name: Some("g"), long_name: "green", code: Color::Green.prefix().to_string()},
     AnsiCode{ short_name: Some("gb"), long_name: "green_bold", code: Color::Green.bold().prefix().to_string()},
     AnsiCode{ short_name: Some("gu"), long_name: "green_underline", code: Color::Green.underline().prefix().to_string()},
@@ -430,8 +425,6 @@ static CODE_LIST: Lazy<Vec<AnsiCode>> = Lazy::new(|| { vec![
     AnsiCode { short_name: Some("grey89"), long_name: "xterm_grey89", code: Color::Fixed(254).prefix().to_string()},
     AnsiCode { short_name: Some("grey93"), long_name: "xterm_grey93", code: Color::Fixed(255).prefix().to_string()},
 
-    AnsiCode{ short_name: None, long_name: "reset", code: "\x1b[0m".to_owned()},
-
     // Attributes
     AnsiCode { short_name: Some("n"), long_name: "attr_normal", code: Color::Green.suffix().to_string()},
     AnsiCode { short_name: Some("bo"), long_name: "attr_bold", code: Style::new().bold().prefix().to_string()},
@@ -441,6 +434,8 @@ static CODE_LIST: Lazy<Vec<AnsiCode>> = Lazy::new(|| { vec![
     AnsiCode { short_name: Some("bl"), long_name: "attr_blink", code: Style::new().blink().prefix().to_string()},
     AnsiCode { short_name: Some("h"), long_name: "attr_hidden", code: Style::new().hidden().prefix().to_string()},
     AnsiCode { short_name: Some("s"), long_name: "attr_strike", code: Style::new().strikethrough().prefix().to_string()},
+
+    AnsiCode{ short_name: None, long_name: "reset", code: "\x1b[0m".to_owned()},
 
     // Reference for ansi codes https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797
     // Another good reference http://ascii-table.com/ansi-escape-sequences.php
@@ -453,7 +448,8 @@ static CODE_LIST: Lazy<Vec<AnsiCode>> = Lazy::new(|| { vec![
     AnsiCode{ short_name: None, long_name:"clear_screen_from_cursor_to_end", code: "\x1b[0J".to_string()}, // clears from cursor until end of screen
     AnsiCode{ short_name: None, long_name:"clear_screen_from_cursor_to_beginning", code: "\x1b[1J".to_string()}, // clears from cursor to beginning of screen
     AnsiCode{ short_name: Some("cls"), long_name:"clear_entire_screen", code: "\x1b[2J".to_string()}, // clears the entire screen
-    AnsiCode{ short_name: Some("clsb"), long_name:"clear_entire_screen_plus_buffer", code: "\x1b[3J".to_string()}, // clear entire screen and delete all lines saved in the scrollback buffer
+    AnsiCode{ short_name: Some("clsb"), long_name:"clear_entire_screen_plus_buffer", code: "\x1b[2J\x1b[3J".to_string()}, // clear entire screen and delete all lines saved in the scrollback buffer
+    AnsiCode{ short_name: Some("clb"), long_name:"clear_scrollback_buffer", code: "\x1b[3J".to_string()}, // clear entire screen and delete all lines saved in the scrollback buffer
     AnsiCode{ short_name: None, long_name:"erase_line", code: "\x1b[K".to_string()},                   // clears the current line
     AnsiCode{ short_name: None, long_name:"erase_line_from_cursor_to_end", code: "\x1b[0K".to_string()}, // clears from cursor to end of line
     AnsiCode{ short_name: None, long_name:"erase_line_from_cursor_to_beginning", code: "\x1b[1K".to_string()}, // clears from cursor to start of line
@@ -498,8 +494,8 @@ static CODE_LIST: Lazy<Vec<AnsiCode>> = Lazy::new(|| { vec![
     ]
 });
 
-static CODE_MAP: Lazy<HashMap<&'static str, &'static str>> =
-    Lazy::new(|| build_ansi_hashmap(&CODE_LIST));
+static CODE_MAP: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| build_ansi_hashmap(&CODE_LIST));
 
 impl Command for AnsiCommand {
     fn name(&self) -> &str {
@@ -508,9 +504,7 @@ impl Command for AnsiCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("ansi")
-            .input_output_types(vec![
-                (Type::Nothing, Type::String),
-                (Type::Nothing, Type::Table(vec![]))])
+            .input_output_types(vec![(Type::Nothing, Type::Any)])
             .optional(
                 "code",
                 SyntaxShape::Any,
@@ -531,11 +525,15 @@ impl Command for AnsiCommand {
             .category(Category::Platform)
     }
 
-    fn usage(&self) -> &str {
+    fn is_const(&self) -> bool {
+        true
+    }
+
+    fn description(&self) -> &str {
         "Output ANSI codes to change color and style of text."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         "An introduction to what ANSI escape sequences are can be found in the
 \u{1b}]8;;https://en.wikipedia.org/wiki/ANSI_escape_code\u{1b}\\ANSI escape code\u{1b}]8;;\u{1b}\\ Wikipedia page.
 
@@ -634,9 +632,9 @@ Operating system commands:
         bg: '#ff0000'
         attr: b
     }
-    $"(ansi --escape $bold_blue_on_red)Hello Nu World(ansi reset)""#,
+    $"(ansi --escape $bold_blue_on_red)Hello, Nu World!(ansi reset)""#,
                 result: Some(Value::test_string(
-                    "\u{1b}[1;48;2;255;0;0;38;2;0;0;255mHello Nu World\u{1b}[0m",
+                    "\u{1b}[1;48;2;255;0;0;38;2;0;0;255mHello, Nu World!\u{1b}[0m",
                 )),
             },
         ]
@@ -656,10 +654,17 @@ Operating system commands:
         let list: bool = call.has_flag(engine_state, stack, "list")?;
         let escape: bool = call.has_flag(engine_state, stack, "escape")?;
         let osc: bool = call.has_flag(engine_state, stack, "osc")?;
-        let use_ansi_coloring = engine_state.get_config().use_ansi_coloring;
+        let use_ansi_coloring = stack
+            .get_config(engine_state)
+            .use_ansi_coloring
+            .get(engine_state);
 
         if list {
-            return generate_ansi_code_list(engine_state, call.head, use_ansi_coloring);
+            return Ok(generate_ansi_code_list(
+                engine_state.signals().clone(),
+                call.head,
+                use_ansi_coloring,
+            ));
         }
 
         // The code can now be one of the ansi abbreviations like green_bold
@@ -675,118 +680,157 @@ Operating system commands:
             }
         };
 
-        let param_is_string = matches!(code, Value::String { .. });
-
-        if escape && osc {
-            return Err(ShellError::IncompatibleParameters {
-                left_message: "escape".into(),
-                left_span: call
-                    .get_named_arg("escape")
-                    .expect("Unexpected missing argument")
-                    .span,
-                right_message: "osc".into(),
-                right_span: call
-                    .get_named_arg("osc")
-                    .expect("Unexpected missing argument")
-                    .span,
-            });
-        }
-
-        let code_string = if param_is_string {
-            code.as_string().expect("error getting code as string")
-        } else {
-            "".to_string()
-        };
-
-        let param_is_valid_string = param_is_string && !code_string.is_empty();
-
-        if (escape || osc) && (param_is_valid_string) {
-            let code_vec: Vec<char> = code_string.chars().collect();
-            if code_vec[0] == '\\' {
-                let span = match call.get_flag_expr("escape") {
-                    Some(expr) => expr.span,
-                    None => call.head,
-                };
-
-                return Err(ShellError::TypeMismatch {
-                    err_message: "no need for escape characters".into(),
-                    span,
-                });
-            }
-        }
-
-        let output = if escape && param_is_valid_string {
-            format!("\x1b[{code_string}")
-        } else if osc && param_is_valid_string {
-            // Operating system command aka osc  ESC ] <- note the right brace, not left brace for osc
-            // OCS's need to end with either:
-            // bel '\x07' char
-            // string terminator aka st '\\' char
-            format!("\x1b]{code_string}")
-        } else if param_is_valid_string {
-            // parse hex colors like #00FF00
-            if code_string.starts_with('#') {
-                match nu_color_config::color_from_hex(&code_string) {
-                    Ok(color) => match color {
-                        Some(c) => c.prefix().to_string(),
-                        None => Color::White.prefix().to_string(),
-                    },
-                    Err(err) => {
-                        return Err(ShellError::GenericError {
-                            error: "error parsing hex color".into(),
-                            msg: format!("{err}"),
-                            span: Some(code.span()),
-                            help: None,
-                            inner: vec![],
-                        });
-                    }
-                }
-            } else {
-                match str_to_ansi(&code_string) {
-                    Some(c) => c,
-                    None => {
-                        return Err(ShellError::TypeMismatch {
-                            err_message: String::from("Unknown ansi code"),
-                            span: call
-                                .positional_nth(0)
-                                .expect("Unexpected missing argument")
-                                .span,
-                        })
-                    }
-                }
-            }
-        } else {
-            // This is a record that should look like
-            // { fg: "#ff0000" bg: "#00ff00" attr: bli }
-            let record = code.as_record()?;
-            // create a NuStyle to parse the information into
-            let mut nu_style = nu_color_config::NuStyle {
-                fg: None,
-                bg: None,
-                attr: None,
-            };
-            // Iterate and populate NuStyle with real values
-            for (k, v) in record {
-                match k.as_str() {
-                    "fg" => nu_style.fg = Some(v.as_string()?),
-                    "bg" => nu_style.bg = Some(v.as_string()?),
-                    "attr" => nu_style.attr = Some(v.as_string()?),
-                    _ => {
-                        return Err(ShellError::IncompatibleParametersSingle {
-                            msg: format!("unknown ANSI format key: expected one of ['fg', 'bg', 'attr'], found '{k}'"),
-                            span: code.span(),
-                        })
-                    }
-                }
-            }
-            // Now create a nu_ansi_term::Style from the NuStyle
-            let style = nu_color_config::parse_nustyle(nu_style);
-            // Return the prefix string. The prefix is the Ansi String. The suffix would be 0m, reset/stop coloring.
-            style.prefix().to_string()
-        };
+        let output = heavy_lifting(code, escape, osc, stack, call)?;
 
         Ok(Value::string(output, call.head).into_pipeline_data())
     }
+
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        _input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let list: bool = call.has_flag_const(working_set, "list")?;
+        let escape: bool = call.has_flag_const(working_set, "escape")?;
+        let osc: bool = call.has_flag_const(working_set, "osc")?;
+        let use_ansi_coloring = working_set
+            .get_config()
+            .use_ansi_coloring
+            .get(working_set.permanent());
+
+        if list {
+            return Ok(generate_ansi_code_list(
+                working_set.permanent().signals().clone(),
+                call.head,
+                use_ansi_coloring,
+            ));
+        }
+
+        // The code can now be one of the ansi abbreviations like green_bold
+        // or it can be a record like this: { fg: "#ff0000" bg: "#00ff00" attr: bli }
+        // this record is defined in nu-color-config crate
+        let code: Value = match call.opt_const(working_set, 0)? {
+            Some(c) => c,
+            None => {
+                return Err(ShellError::MissingParameter {
+                    param_name: "code".into(),
+                    span: call.head,
+                })
+            }
+        };
+
+        let output = heavy_lifting(code, escape, osc, &Stack::new(), call)?;
+
+        Ok(Value::string(output, call.head).into_pipeline_data())
+    }
+}
+
+fn heavy_lifting(
+    code: Value,
+    escape: bool,
+    osc: bool,
+    stack: &Stack,
+    call: &Call,
+) -> Result<String, ShellError> {
+    let param_is_string = matches!(code, Value::String { .. });
+    if escape && osc {
+        return Err(ShellError::IncompatibleParameters {
+            left_message: "escape".into(),
+            left_span: call
+                .get_flag_span(stack, "escape")
+                .expect("Unexpected missing argument"),
+            right_message: "osc".into(),
+            right_span: call
+                .get_flag_span(stack, "osc")
+                .expect("Unexpected missing argument"),
+        });
+    }
+    let code_string = if param_is_string {
+        code.coerce_str().expect("error getting code as string")
+    } else {
+        "".into()
+    };
+    let param_is_valid_string = param_is_string && !code_string.is_empty();
+    if (escape || osc) && (param_is_valid_string) {
+        let code_vec: Vec<char> = code_string.chars().collect();
+        if code_vec[0] == '\\' {
+            let span = call.get_flag_span(stack, "escape").unwrap_or(call.head);
+
+            return Err(ShellError::TypeMismatch {
+                err_message: "no need for escape characters".into(),
+                span,
+            });
+        }
+    }
+    let output = if escape && param_is_valid_string {
+        format!("\x1b[{code_string}")
+    } else if osc && param_is_valid_string {
+        // Operating system command aka osc  ESC ] <- note the right brace, not left brace for osc
+        // OCS's need to end with either:
+        // bel '\x07' char
+        // string terminator aka st '\\' char
+        format!("\x1b]{code_string}")
+    } else if param_is_valid_string {
+        // parse hex colors like #00FF00
+        if code_string.starts_with('#') {
+            match nu_color_config::color_from_hex(&code_string) {
+                Ok(color) => match color {
+                    Some(c) => c.prefix().to_string(),
+                    None => Color::White.prefix().to_string(),
+                },
+                Err(err) => {
+                    return Err(ShellError::GenericError {
+                        error: "error parsing hex color".into(),
+                        msg: format!("{err}"),
+                        span: Some(code.span()),
+                        help: None,
+                        inner: vec![],
+                    });
+                }
+            }
+        } else {
+            match str_to_ansi(&code_string) {
+                Some(c) => c,
+                None => {
+                    return Err(ShellError::TypeMismatch {
+                        err_message: String::from("Unknown ansi code"),
+                        span: code.span(),
+                    })
+                }
+            }
+        }
+    } else {
+        let span = code.span();
+        // This is a record that should look like
+        // { fg: "#ff0000" bg: "#00ff00" attr: bli }
+        let record = code.into_record()?;
+        // create a NuStyle to parse the information into
+        let mut nu_style = nu_color_config::NuStyle {
+            fg: None,
+            bg: None,
+            attr: None,
+        };
+        // Iterate and populate NuStyle with real values
+        for (k, v) in record {
+            match k.as_str() {
+                "fg" => nu_style.fg = Some(v.coerce_into_string()?),
+                "bg" => nu_style.bg = Some(v.coerce_into_string()?),
+                "attr" => nu_style.attr = Some(v.coerce_into_string()?),
+                _ => {
+                    return Err(ShellError::IncompatibleParametersSingle {
+                        msg: format!("unknown ANSI format key: expected one of ['fg', 'bg', 'attr'], found '{k}'"),
+                        span,
+                    })
+                }
+            }
+        }
+        // Now create a nu_ansi_term::Style from the NuStyle
+        let style = nu_color_config::parse_nustyle(nu_style);
+        // Return the prefix string. The prefix is the Ansi String. The suffix would be 0m, reset/stop coloring.
+        style.prefix().to_string()
+    };
+    Ok(output)
 }
 
 pub fn str_to_ansi(s: &str) -> Option<String> {
@@ -794,25 +838,29 @@ pub fn str_to_ansi(s: &str) -> Option<String> {
 }
 
 fn generate_ansi_code_list(
-    engine_state: &EngineState,
+    signals: Signals,
     call_span: Span,
     use_ansi_coloring: bool,
-) -> Result<PipelineData, ShellError> {
-    return Ok(CODE_LIST
+) -> PipelineData {
+    CODE_LIST
         .iter()
         .enumerate()
         .map(move |(i, ansi_code)| {
             let name = Value::string(ansi_code.long_name, call_span);
             let short_name = Value::string(ansi_code.short_name.unwrap_or(""), call_span);
-            // The first 102 items in the ansi array are colors
-            let preview = if i < 389 {
-                Value::string(format!("{}NUSHELL\u{1b}[0m", &ansi_code.code), call_span)
-            } else {
-                Value::string("\u{1b}[0m", call_span)
-            };
             let code = Value::string(ansi_code.code.replace('\u{1b}', "\\e"), call_span);
 
             let record = if use_ansi_coloring {
+                // The first 397 items in the ansi array are previewable
+                let preview = if i < 397 {
+                    Value::string(
+                        format!("\u{1b}[0m{}NUSHELL\u{1b}[0m", &ansi_code.code),
+                        call_span,
+                    )
+                } else {
+                    Value::string("\u{1b}[0m", call_span)
+                };
+
                 record! {
                     "name" => name,
                     "preview" => preview,
@@ -829,7 +877,7 @@ fn generate_ansi_code_list(
 
             Value::record(record, call_span)
         })
-        .into_pipeline_data(engine_state.ctrlc.clone()));
+        .into_pipeline_data(call_span, signals.clone())
 }
 
 fn build_ansi_hashmap(v: &[AnsiCode]) -> HashMap<&str, &str> {

@@ -1,11 +1,5 @@
 use nu_cmd_base::input_handler::{operate, CmdArgument};
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::{Call, CellPath},
-    engine::{Command, EngineState, Stack},
-    record, Category, Example, PipelineData, ShellError, Signature, Span, Spanned, SyntaxShape,
-    Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 struct Arguments {
     find: Vec<u8>,
@@ -32,8 +26,8 @@ impl Command for BytesReplace {
         Signature::build("bytes replace")
             .input_output_types(vec![
                 (Type::Binary, Type::Binary),
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (Type::Record(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::table()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .required("find", SyntaxShape::Binary, "The pattern to find.")
@@ -47,7 +41,7 @@ impl Command for BytesReplace {
             .category(Category::Bytes)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Find and replace binary."
     }
 
@@ -79,7 +73,7 @@ impl Command for BytesReplace {
             all: call.has_flag(engine_state, stack, "all")?,
         };
 
-        operate(replace, arg, input, call.head, engine_state.ctrlc.clone())
+        operate(replace, arg, input, call.head, engine_state.signals())
     }
 
     fn examples(&self) -> Vec<Example> {

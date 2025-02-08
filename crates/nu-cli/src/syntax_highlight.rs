@@ -1,24 +1,27 @@
 use log::trace;
 use nu_ansi_term::Style;
 use nu_color_config::{get_matching_brackets_style, get_shape_color};
+use nu_engine::env;
 use nu_parser::{flatten_block, parse, FlatShape};
-use nu_protocol::ast::{Argument, Block, Expr, Expression, PipelineElement, RecordItem};
-use nu_protocol::engine::{EngineState, StateWorkingSet};
-use nu_protocol::{Config, Span};
+use nu_protocol::{
+    ast::{Block, Expr, Expression, PipelineRedirection, RecordItem},
+    engine::{EngineState, Stack, StateWorkingSet},
+    Span,
+};
 use reedline::{Highlighter, StyledText};
 use std::sync::Arc;
 
 pub struct NuHighlighter {
     pub engine_state: Arc<EngineState>,
-    pub config: Config,
+    pub stack: Arc<Stack>,
 }
 
 impl Highlighter for NuHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         trace!("highlighting: {}", line);
 
-        let highlight_resolved_externals =
-            self.engine_state.get_config().highlight_resolved_externals;
+        let config = self.stack.get_config(&self.engine_state);
+        let highlight_resolved_externals = config.highlight_resolved_externals;
         let mut working_set = StateWorkingSet::new(&self.engine_state);
         let block = parse(&mut working_set, None, line.as_bytes(), false);
         let (shapes, global_span_offset) = {
@@ -32,7 +35,18 @@ impl Highlighter for NuHighlighter {
                             working_set.get_span_contents(Span::new(span.start, span.end));
 
                         let str_word = String::from_utf8_lossy(str_contents).to_string();
-                        if which::which(str_word).ok().is_some() {
+                        let paths = env::path_str(&self.engine_state, &self.stack, *span).ok();
+                        #[allow(deprecated)]
+                        let res = if let Ok(cwd) =
+                            env::current_dir_str(&self.engine_state, &self.stack)
+                        {
+                            which::which_in(str_word, paths.as_ref(), cwd).ok()
+                        } else {
+                            which::which_in_global(str_word, paths.as_ref())
+                                .ok()
+                                .and_then(|mut i| i.next())
+                        };
+                        if res.is_some() {
                             *shape = FlatShape::ExternalResolved;
                         }
                     }
@@ -72,29 +86,8 @@ impl Highlighter for NuHighlighter {
                 [(shape.0.start - global_span_offset)..(shape.0.end - global_span_offset)]
                 .to_string();
 
-            macro_rules! add_colored_token_with_bracket_highlight {
-                ($shape:expr, $span:expr, $text:expr) => {{
-                    let spans = split_span_by_highlight_positions(
-                        line,
-                        $span,
-                        &matching_brackets_pos,
-                        global_span_offset,
-                    );
-                    spans.iter().for_each(|(part, highlight)| {
-                        let start = part.start - $span.start;
-                        let end = part.end - $span.start;
-                        let text = (&next_token[start..end]).to_string();
-                        let mut style = get_shape_color($shape.to_string(), &self.config);
-                        if *highlight {
-                            style = get_matching_brackets_style(style, &self.config);
-                        }
-                        output.push((style, text));
-                    });
-                }};
-            }
-
             let mut add_colored_token = |shape: &FlatShape, text: String| {
-                output.push((get_shape_color(shape.to_string(), &self.config), text));
+                output.push((get_shape_color(shape.as_str(), &config), text));
             };
 
             match shape.1 {
@@ -114,35 +107,43 @@ impl Highlighter for NuHighlighter {
                 FlatShape::Operator => add_colored_token(&shape.1, next_token),
                 FlatShape::Signature => add_colored_token(&shape.1, next_token),
                 FlatShape::String => add_colored_token(&shape.1, next_token),
+                FlatShape::RawString => add_colored_token(&shape.1, next_token),
                 FlatShape::StringInterpolation => add_colored_token(&shape.1, next_token),
                 FlatShape::DateTime => add_colored_token(&shape.1, next_token),
-                FlatShape::List => {
-                    add_colored_token_with_bracket_highlight!(shape.1, shape.0, next_token)
-                }
-                FlatShape::Table => {
-                    add_colored_token_with_bracket_highlight!(shape.1, shape.0, next_token)
-                }
-                FlatShape::Record => {
-                    add_colored_token_with_bracket_highlight!(shape.1, shape.0, next_token)
-                }
-
-                FlatShape::Block => {
-                    add_colored_token_with_bracket_highlight!(shape.1, shape.0, next_token)
-                }
-                FlatShape::Closure => {
-                    add_colored_token_with_bracket_highlight!(shape.1, shape.0, next_token)
+                FlatShape::List
+                | FlatShape::Table
+                | FlatShape::Record
+                | FlatShape::Block
+                | FlatShape::Closure => {
+                    let span = shape.0;
+                    let shape = &shape.1;
+                    let spans = split_span_by_highlight_positions(
+                        line,
+                        span,
+                        &matching_brackets_pos,
+                        global_span_offset,
+                    );
+                    for (part, highlight) in spans {
+                        let start = part.start - span.start;
+                        let end = part.end - span.start;
+                        let text = next_token[start..end].to_string();
+                        let mut style = get_shape_color(shape.as_str(), &config);
+                        if highlight {
+                            style = get_matching_brackets_style(style, &config);
+                        }
+                        output.push((style, text));
+                    }
                 }
 
                 FlatShape::Filepath => add_colored_token(&shape.1, next_token),
                 FlatShape::Directory => add_colored_token(&shape.1, next_token),
+                FlatShape::GlobInterpolation => add_colored_token(&shape.1, next_token),
                 FlatShape::GlobPattern => add_colored_token(&shape.1, next_token),
                 FlatShape::Variable(_) | FlatShape::VarDecl(_) => {
                     add_colored_token(&shape.1, next_token)
                 }
                 FlatShape::Flag => add_colored_token(&shape.1, next_token),
                 FlatShape::Pipe => add_colored_token(&shape.1, next_token),
-                FlatShape::And => add_colored_token(&shape.1, next_token),
-                FlatShape::Or => add_colored_token(&shape.1, next_token),
                 FlatShape::Redirection => add_colored_token(&shape.1, next_token),
                 FlatShape::Custom(..) => add_colored_token(&shape.1, next_token),
                 FlatShape::MatchPattern => add_colored_token(&shape.1, next_token),
@@ -250,24 +251,38 @@ fn find_matching_block_end_in_block(
 ) -> Option<usize> {
     for p in &block.pipelines {
         for e in &p.elements {
-            match e {
-                PipelineElement::Expression(_, e)
-                | PipelineElement::Redirection(_, _, e, _)
-                | PipelineElement::And(_, e)
-                | PipelineElement::Or(_, e)
-                | PipelineElement::SameTargetRedirection { cmd: (_, e), .. }
-                | PipelineElement::SeparateRedirection { out: (_, e, _), .. } => {
-                    if e.span.contains(global_cursor_offset) {
-                        if let Some(pos) = find_matching_block_end_in_expr(
-                            line,
-                            working_set,
-                            e,
-                            global_span_offset,
-                            global_cursor_offset,
-                        ) {
+            if e.expr.span.contains(global_cursor_offset) {
+                if let Some(pos) = find_matching_block_end_in_expr(
+                    line,
+                    working_set,
+                    &e.expr,
+                    global_span_offset,
+                    global_cursor_offset,
+                ) {
+                    return Some(pos);
+                }
+            }
+
+            if let Some(redirection) = e.redirection.as_ref() {
+                match redirection {
+                    PipelineRedirection::Single { target, .. }
+                    | PipelineRedirection::Separate { out: target, .. }
+                    | PipelineRedirection::Separate { err: target, .. }
+                        if target.span().contains(global_cursor_offset) =>
+                    {
+                        if let Some(pos) = target.expr().and_then(|expr| {
+                            find_matching_block_end_in_expr(
+                                line,
+                                working_set,
+                                expr,
+                                global_span_offset,
+                                global_cursor_offset,
+                            )
+                        }) {
                             return Some(pos);
                         }
                     }
+                    _ => {}
                 }
             }
         }
@@ -282,20 +297,6 @@ fn find_matching_block_end_in_expr(
     global_span_offset: usize,
     global_cursor_offset: usize,
 ) -> Option<usize> {
-    macro_rules! find_in_expr_or_continue {
-        ($inner_expr:ident) => {
-            if let Some(pos) = find_matching_block_end_in_expr(
-                line,
-                working_set,
-                $inner_expr,
-                global_span_offset,
-                global_cursor_offset,
-            ) {
-                return Some(pos);
-            }
-        };
-    }
-
     if expression.span.contains(global_cursor_offset) && expression.span.start >= global_span_offset
     {
         let expr_first = expression.span.start;
@@ -321,10 +322,11 @@ fn find_matching_block_end_in_expr(
             Expr::Keyword(..) => None,
             Expr::ValueWithUnit(..) => None,
             Expr::DateTime(_) => None,
-            Expr::Filepath(_) => None,
-            Expr::Directory(_) => None,
-            Expr::GlobPattern(_) => None,
+            Expr::Filepath(_, _) => None,
+            Expr::Directory(_, _) => None,
+            Expr::GlobPattern(_, _) => None,
             Expr::String(_) => None,
+            Expr::RawString(_) => None,
             Expr::CellPath(_) => None,
             Expr::ImportPattern(_) => None,
             Expr::Overlay(_) => None,
@@ -332,9 +334,8 @@ fn find_matching_block_end_in_expr(
             Expr::MatchBlock(_) => None,
             Expr::Nothing => None,
             Expr::Garbage => None,
-            Expr::Spread(_) => None,
 
-            Expr::Table(hdr, rows) => {
+            Expr::Table(table) => {
                 if expr_last == global_cursor_offset {
                     // cursor is at table end
                     Some(expr_first)
@@ -343,15 +344,19 @@ fn find_matching_block_end_in_expr(
                     Some(expr_last)
                 } else {
                     // cursor is inside table
-                    for inner_expr in hdr {
-                        find_in_expr_or_continue!(inner_expr);
-                    }
-                    for row in rows {
-                        for inner_expr in row {
-                            find_in_expr_or_continue!(inner_expr);
-                        }
-                    }
-                    None
+                    table
+                        .columns
+                        .iter()
+                        .chain(table.rows.iter().flat_map(AsRef::as_ref))
+                        .find_map(|expr| {
+                            find_matching_block_end_in_expr(
+                                line,
+                                working_set,
+                                expr,
+                                global_span_offset,
+                                global_cursor_offset,
+                            )
+                        })
                 }
             }
 
@@ -364,36 +369,45 @@ fn find_matching_block_end_in_expr(
                     Some(expr_last)
                 } else {
                     // cursor is inside record
-                    for expr in exprs {
-                        match expr {
-                            RecordItem::Pair(k, v) => {
-                                find_in_expr_or_continue!(k);
-                                find_in_expr_or_continue!(v);
-                            }
-                            RecordItem::Spread(_, record) => {
-                                find_in_expr_or_continue!(record);
-                            }
-                        }
-                    }
-                    None
+                    exprs.iter().find_map(|expr| match expr {
+                        RecordItem::Pair(k, v) => find_matching_block_end_in_expr(
+                            line,
+                            working_set,
+                            k,
+                            global_span_offset,
+                            global_cursor_offset,
+                        )
+                        .or_else(|| {
+                            find_matching_block_end_in_expr(
+                                line,
+                                working_set,
+                                v,
+                                global_span_offset,
+                                global_cursor_offset,
+                            )
+                        }),
+                        RecordItem::Spread(_, record) => find_matching_block_end_in_expr(
+                            line,
+                            working_set,
+                            record,
+                            global_span_offset,
+                            global_cursor_offset,
+                        ),
+                    })
                 }
             }
 
-            Expr::Call(call) => {
-                for arg in &call.arguments {
-                    let opt_expr = match arg {
-                        Argument::Named((_, _, opt_expr)) => opt_expr.as_ref(),
-                        Argument::Positional(inner_expr) => Some(inner_expr),
-                        Argument::Unknown(inner_expr) => Some(inner_expr),
-                        Argument::Spread(inner_expr) => Some(inner_expr),
-                    };
-
-                    if let Some(inner_expr) = opt_expr {
-                        find_in_expr_or_continue!(inner_expr);
-                    }
-                }
-                None
-            }
+            Expr::Call(call) => call.arguments.iter().find_map(|arg| {
+                arg.expr().and_then(|expr| {
+                    find_matching_block_end_in_expr(
+                        line,
+                        working_set,
+                        expr,
+                        global_span_offset,
+                        global_cursor_offset,
+                    )
+                })
+            }),
 
             Expr::FullCellPath(b) => find_matching_block_end_in_expr(
                 line,
@@ -403,12 +417,23 @@ fn find_matching_block_end_in_expr(
                 global_cursor_offset,
             ),
 
-            Expr::BinaryOp(lhs, op, rhs) => {
-                find_in_expr_or_continue!(lhs);
-                find_in_expr_or_continue!(op);
-                find_in_expr_or_continue!(rhs);
-                None
-            }
+            Expr::BinaryOp(lhs, op, rhs) => [lhs, op, rhs].into_iter().find_map(|expr| {
+                find_matching_block_end_in_expr(
+                    line,
+                    working_set,
+                    expr,
+                    global_span_offset,
+                    global_cursor_offset,
+                )
+            }),
+
+            Expr::Collect(_, expr) => find_matching_block_end_in_expr(
+                line,
+                working_set,
+                expr,
+                global_span_offset,
+                global_cursor_offset,
+            ),
 
             Expr::Block(block_id)
             | Expr::Closure(block_id)
@@ -433,14 +458,19 @@ fn find_matching_block_end_in_expr(
                 }
             }
 
-            Expr::StringInterpolation(inner_expr) => {
-                for inner_expr in inner_expr {
-                    find_in_expr_or_continue!(inner_expr);
-                }
-                None
+            Expr::StringInterpolation(exprs) | Expr::GlobInterpolation(exprs, _) => {
+                exprs.iter().find_map(|expr| {
+                    find_matching_block_end_in_expr(
+                        line,
+                        working_set,
+                        expr,
+                        global_span_offset,
+                        global_cursor_offset,
+                    )
+                })
             }
 
-            Expr::List(inner_expr) => {
+            Expr::List(list) => {
                 if expr_last == global_cursor_offset {
                     // cursor is at list end
                     Some(expr_first)
@@ -448,11 +478,15 @@ fn find_matching_block_end_in_expr(
                     // cursor is at list start
                     Some(expr_last)
                 } else {
-                    // cursor is inside list
-                    for inner_expr in inner_expr {
-                        find_in_expr_or_continue!(inner_expr);
-                    }
-                    None
+                    list.iter().find_map(|item| {
+                        find_matching_block_end_in_expr(
+                            line,
+                            working_set,
+                            item.expr(),
+                            global_span_offset,
+                            global_cursor_offset,
+                        )
+                    })
                 }
             }
         };

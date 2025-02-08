@@ -90,7 +90,7 @@ fn folding_with_tables() {
         "
         echo [10 20 30 40]
         | reduce --fold [] { |it, acc|
-            with-env [value $it] {
+            with-env { value: $it } {
               echo $acc | append (10 * ($env.value | into int))
             }
           }
@@ -114,7 +114,7 @@ fn error_reduce_fold_type_mismatch() {
 fn error_reduce_empty() {
     let actual = nu!(pipeline("reduce { |it, acc| $acc + $it }"));
 
-    assert!(actual.err.contains("needs input"));
+    assert!(actual.err.contains("no input value was piped in"));
 }
 
 #[test]

@@ -1,11 +1,5 @@
-use indexmap::map::IndexMap;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span,
-    Spanned, SyntaxShape, Type, Value,
-};
+use indexmap::IndexMap;
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct FromSsv;
@@ -19,7 +13,7 @@ impl Command for FromSsv {
 
     fn signature(&self) -> Signature {
         Signature::build("from ssv")
-            .input_output_types(vec![(Type::String, Type::Table(vec![]))])
+            .input_output_types(vec![(Type::String, Type::table())])
             .switch(
                 "noheaders",
                 "don't treat the first row as column names",
@@ -35,7 +29,7 @@ impl Command for FromSsv {
             .category(Category::Formats)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Parse text as space-separated values and create a table. The default minimum number of spaces counted as a separator is 2."
     }
 
@@ -58,12 +52,12 @@ impl Command for FromSsv {
                 Value::test_list(
                     vec![
                         Value::test_record(record! {
-                            "column1" => Value::test_string("FOO"),
-                            "column2" => Value::test_string("BAR"),
+                            "column0" => Value::test_string("FOO"),
+                            "column1" => Value::test_string("BAR"),
                         }),
                         Value::test_record(record! {
-                            "column1" => Value::test_string("1"),
-                            "column2" => Value::test_string("2"),
+                            "column0" => Value::test_string("1"),
+                            "column1" => Value::test_string("2"),
                         }),
                     ],
                 )
@@ -176,7 +170,7 @@ fn parse_aligned_columns<'a>(
         let headers: Vec<(String, usize)> = indices
             .iter()
             .enumerate()
-            .map(|(i, position)| (format!("column{}", i + 1), *position))
+            .map(|(i, position)| (format!("column{}", i), *position))
             .collect();
 
         construct(ls.iter().map(|s| s.to_owned()), headers)
@@ -221,7 +215,7 @@ fn parse_separated_columns<'a>(
     let parse_without_headers = |ls: Vec<&str>| {
         let num_columns = ls.iter().map(|r| r.len()).max().unwrap_or(0);
 
-        let headers = (1..=num_columns)
+        let headers = (0..=num_columns)
             .map(|i| format!("column{i}"))
             .collect::<Vec<String>>();
         collect(headers, ls.into_iter(), separator)
@@ -239,7 +233,9 @@ fn string_to_table(
     aligned_columns: bool,
     split_at: usize,
 ) -> Vec<Vec<(String, String)>> {
-    let mut lines = s.lines().filter(|l| !l.trim().is_empty());
+    let mut lines = s
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'));
     let separator = " ".repeat(std::cmp::max(split_at, 1));
 
     let (ls, header_options) = if noheaders {
@@ -315,6 +311,24 @@ mod tests {
     }
 
     #[test]
+    fn it_filters_comment_lines() {
+        let input = r#"
+            a       b
+            1       2
+            3       4
+            #comment       line
+        "#;
+        let result = string_to_table(input, false, true, 1);
+        assert_eq!(
+            result,
+            vec![
+                vec![owned("a", "1"), owned("b", "2")],
+                vec![owned("a", "3"), owned("b", "4")]
+            ]
+        );
+    }
+
+    #[test]
     fn it_trims_empty_and_whitespace_only_lines() {
         let input = r#"
 
@@ -356,9 +370,9 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                vec![owned("column1", "a"), owned("column2", "b")],
-                vec![owned("column1", "1"), owned("column2", "2")],
-                vec![owned("column1", "3"), owned("column2", "4")]
+                vec![owned("column0", "a"), owned("column1", "b")],
+                vec![owned("column0", "1"), owned("column1", "2")],
+                vec![owned("column0", "3"), owned("column1", "4")]
             ]
         );
     }
@@ -470,25 +484,25 @@ mod tests {
             result,
             vec![
                 vec![
-                    owned("column1", "a multi-word value"),
-                    owned("column2", "b"),
-                    owned("column3", ""),
-                    owned("column4", "d"),
-                    owned("column5", "")
-                ],
-                vec![
-                    owned("column1", "1"),
+                    owned("column0", "a multi-word value"),
+                    owned("column1", "b"),
                     owned("column2", ""),
-                    owned("column3", "3-3"),
-                    owned("column4", "4"),
-                    owned("column5", "")
+                    owned("column3", "d"),
+                    owned("column4", "")
                 ],
                 vec![
+                    owned("column0", "1"),
+                    owned("column1", ""),
+                    owned("column2", "3-3"),
+                    owned("column3", "4"),
+                    owned("column4", "")
+                ],
+                vec![
+                    owned("column0", ""),
                     owned("column1", ""),
                     owned("column2", ""),
                     owned("column3", ""),
-                    owned("column4", ""),
-                    owned("column5", "last")
+                    owned("column4", "last")
                 ],
             ]
         );

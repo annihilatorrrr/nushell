@@ -1,7 +1,8 @@
 use nu_engine::eval_block;
 use nu_protocol::{
+    debugger::WithoutDebug,
     engine::{EngineState, Stack},
-    IntoPipelineData, Span, Value,
+    BlockId, IntoPipelineData, Span, Value,
 };
 use reedline::{menu_functions::parse_selection_char, Completer, Suggestion};
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 const SELECTION_CHAR: char = '!';
 
 pub struct NuMenuCompleter {
-    block_id: usize,
+    block_id: BlockId,
     span: Span,
     stack: Stack,
     engine_state: Arc<EngineState>,
@@ -18,7 +19,7 @@ pub struct NuMenuCompleter {
 
 impl NuMenuCompleter {
     pub fn new(
-        block_id: usize,
+        block_id: BlockId,
         span: Span,
         stack: Stack,
         engine_state: Arc<EngineState>,
@@ -27,7 +28,7 @@ impl NuMenuCompleter {
         Self {
             block_id,
             span,
-            stack,
+            stack: stack.reset_out_dest().collect_value(),
             engine_state,
             only_buffer_difference,
         }
@@ -55,17 +56,10 @@ impl Completer for NuMenuCompleter {
         }
 
         let input = Value::nothing(self.span).into_pipeline_data();
-        let res = eval_block(
-            &self.engine_state,
-            &mut self.stack,
-            block,
-            input,
-            false,
-            false,
-        );
 
-        if let Ok(values) = res {
-            let values = values.into_value(self.span);
+        let res = eval_block::<WithoutDebug>(&self.engine_state, &mut self.stack, block, input);
+
+        if let Ok(values) = res.and_then(|data| data.into_value(self.span)) {
             convert_to_suggestions(values, line, pos, self.only_buffer_difference)
         } else {
             Vec::new()
@@ -83,10 +77,12 @@ fn convert_to_suggestions(
         Value::Record { val, .. } => {
             let text = val
                 .get("value")
-                .and_then(|val| val.as_string().ok())
+                .and_then(|val| val.coerce_string().ok())
                 .unwrap_or_else(|| "No value key".to_string());
 
-            let description = val.get("description").and_then(|val| val.as_string().ok());
+            let description = val
+                .get("description")
+                .and_then(|val| val.coerce_string().ok());
 
             let span = match val.get("span") {
                 Some(Value::Record { val: span, .. }) => {
@@ -101,9 +97,13 @@ fn convert_to_suggestions(
                             }
                         }
                         _ => reedline::Span {
-                            start: if only_buffer_difference { pos } else { 0 },
+                            start: if only_buffer_difference {
+                                pos - line.len()
+                            } else {
+                                0
+                            },
                             end: if only_buffer_difference {
-                                pos + line.len()
+                                pos
                             } else {
                                 line.len()
                             },
@@ -111,9 +111,13 @@ fn convert_to_suggestions(
                     }
                 }
                 _ => reedline::Span {
-                    start: if only_buffer_difference { pos } else { 0 },
+                    start: if only_buffer_difference {
+                        pos - line.len()
+                    } else {
+                        0
+                    },
                     end: if only_buffer_difference {
-                        pos + line.len()
+                        pos
                     } else {
                         line.len()
                     },
@@ -140,7 +144,7 @@ fn convert_to_suggestions(
                 description,
                 extra,
                 span,
-                append_whitespace: false,
+                ..Suggestion::default()
             }]
         }
         Value::List { vals, .. } => vals
@@ -149,13 +153,19 @@ fn convert_to_suggestions(
             .collect(),
         _ => vec![Suggestion {
             value: format!("Not a record: {value:?}"),
-            description: None,
-            extra: None,
             span: reedline::Span {
-                start: 0,
-                end: line.len(),
+                start: if only_buffer_difference {
+                    pos - line.len()
+                } else {
+                    0
+                },
+                end: if only_buffer_difference {
+                    pos
+                } else {
+                    line.len()
+                },
             },
-            append_whitespace: false,
+            ..Suggestion::default()
         }],
     }
 }

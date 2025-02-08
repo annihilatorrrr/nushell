@@ -1,9 +1,5 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, ListStream, PipelineData, ShellError, Signature, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::ListStream;
 use rand::prelude::{thread_rng, Rng};
 
 #[derive(Clone)]
@@ -16,7 +12,7 @@ impl Command for SubCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("random dice")
-            .input_output_types(vec![(Type::Nothing, Type::ListStream)])
+            .input_output_types(vec![(Type::Nothing, Type::list(Type::Int))])
             .allow_variants_without_examples(true)
             .named(
                 "dice",
@@ -33,7 +29,7 @@ impl Command for SubCommand {
             .category(Category::Random)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Generate a random dice roll."
     }
 
@@ -82,10 +78,7 @@ fn dice(
         Value::int(thread_rng.gen_range(1..sides + 1) as i64, span)
     });
 
-    Ok(PipelineData::ListStream(
-        ListStream::from_stream(iter, engine_state.ctrlc.clone()),
-        None,
-    ))
+    Ok(ListStream::new(iter, span, engine_state.signals().clone()).into())
 }
 
 #[cfg(test)]

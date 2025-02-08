@@ -3,15 +3,19 @@ mod events;
 pub mod report;
 mod status_bar;
 
-use std::{
-    cmp::min,
-    io::{self, Result, Stdout},
-    result,
-    sync::atomic::Ordering,
+use self::{
+    command_bar::CommandBar,
+    report::{Report, Severity},
+    status_bar::StatusBar,
 };
-
-use std::collections::HashMap;
-
+use super::views::{Layout, View};
+use crate::{
+    explore::ExploreConfig,
+    nu_common::{NuColor, NuConfig, NuStyle},
+    registry::{Command, CommandRegistry},
+    views::{util::nu_style_to_tui, ViewConfig},
+};
+use anyhow::Result;
 use crossterm::{
     event::{KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -20,34 +24,22 @@ use crossterm::{
         LeaveAlternateScreen,
     },
 };
+use events::UIEvents;
 use lscolors::LsColors;
-use nu_color_config::{lookup_ansi_color_style, StyleComputer};
+use nu_color_config::StyleComputer;
 use nu_protocol::{
     engine::{EngineState, Stack},
-    Record, Value,
+    Value,
 };
 use ratatui::{backend::CrosstermBackend, layout::Rect, widgets::Block};
-
-use crate::{
-    nu_common::{CtrlC, NuColor, NuConfig, NuSpan, NuStyle},
-    registry::{Command, CommandRegistry},
-    util::map_into_value,
-    views::{util::nu_style_to_tui, ViewConfig},
+use std::{
+    cmp::min,
+    io::{self, Stdout},
+    result,
 };
 
-use self::{
-    command_bar::CommandBar,
-    report::{Report, Severity},
-    status_bar::StatusBar,
-};
-
-use super::views::{Layout, View};
-
-use events::UIEvents;
-
-pub type Frame<'a> = ratatui::Frame<'a, CrosstermBackend<Stdout>>;
+pub type Frame<'a> = ratatui::Frame<'a>;
 pub type Terminal = ratatui::Terminal<CrosstermBackend<Stdout>>;
-pub type ConfigMap = HashMap<String, Value>;
 
 #[derive(Debug, Clone)]
 pub struct Pager<'a> {
@@ -78,19 +70,6 @@ struct CommandBuf {
     cmd_exec_info: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct StyleConfig {
-    pub status_info: NuStyle,
-    pub status_success: NuStyle,
-    pub status_warn: NuStyle,
-    pub status_error: NuStyle,
-    pub status_bar_background: NuStyle,
-    pub status_bar_text: NuStyle,
-    pub cmd_bar_text: NuStyle,
-    pub cmd_bar_background: NuStyle,
-    pub highlight: NuStyle,
-}
-
 impl<'a> Pager<'a> {
     pub fn new(config: PagerConfig<'a>) -> Self {
         Self {
@@ -105,127 +84,96 @@ impl<'a> Pager<'a> {
         self.message = Some(text.into());
     }
 
-    pub fn set_config(&mut self, path: &[String], value: Value) -> bool {
-        let path = path.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-
-        match &path[..] {
-            ["status_bar_text"] => value_as_style(&mut self.config.style.status_bar_text, &value),
-            ["status_bar_background"] => {
-                value_as_style(&mut self.config.style.status_bar_background, &value)
-            }
-            ["command_bar_text"] => value_as_style(&mut self.config.style.cmd_bar_text, &value),
-            ["command_bar_background"] => {
-                value_as_style(&mut self.config.style.cmd_bar_background, &value)
-            }
-            ["highlight"] => value_as_style(&mut self.config.style.highlight, &value),
-            ["status", "info"] => value_as_style(&mut self.config.style.status_info, &value),
-            ["status", "success"] => value_as_style(&mut self.config.style.status_success, &value),
-            ["status", "warn"] => value_as_style(&mut self.config.style.status_warn, &value),
-            ["status", "error"] => value_as_style(&mut self.config.style.status_error, &value),
-            path => set_config(&mut self.config.config, path, value),
-        }
-    }
-
     pub fn run(
         &mut self,
         engine_state: &EngineState,
         stack: &mut Stack,
-        ctrlc: CtrlC,
-        mut view: Option<Page>,
+        view: Option<Page>,
         commands: CommandRegistry,
     ) -> Result<Option<Value>> {
-        if let Some(page) = &mut view {
-            page.view.setup(ViewConfig::new(
-                self.config.nu_config,
-                self.config.style_computer,
-                &self.config.config,
-                self.config.lscolors,
-            ))
+        // setup terminal
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, Clear(ClearType::All))?;
+
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        let mut info = ViewInfo {
+            status: Some(Report::default()),
+            ..Default::default()
+        };
+
+        if let Some(text) = self.message.take() {
+            info.status = Some(Report::message(text, Severity::Info));
         }
 
-        run_pager(engine_state, stack, ctrlc, self, view, commands)
+        let result = render_ui(
+            &mut terminal,
+            engine_state,
+            stack,
+            self,
+            &mut info,
+            view,
+            commands,
+        )?;
+
+        // restore terminal
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+
+        Ok(result)
     }
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum Transition {
     Ok,
     Exit,
     Cmd(String),
+    None,
+}
+
+#[derive(Debug, Clone)]
+pub enum StatusTopOrEnd {
+    Top,
+    End,
+    None,
 }
 
 #[derive(Debug, Clone)]
 pub struct PagerConfig<'a> {
     pub nu_config: &'a NuConfig,
+    pub explore_config: &'a ExploreConfig,
     pub style_computer: &'a StyleComputer<'a>,
     pub lscolors: &'a LsColors,
-    pub config: ConfigMap,
-    pub style: StyleConfig,
+    // If true, when quitting output the value of the cell the cursor was on
     pub peek_value: bool,
-    pub reverse: bool,
+    pub tail: bool,
+    // Just a cached dir we are working in used for color manipulations
+    pub cwd: String,
 }
 
 impl<'a> PagerConfig<'a> {
     pub fn new(
         nu_config: &'a NuConfig,
+        explore_config: &'a ExploreConfig,
         style_computer: &'a StyleComputer,
         lscolors: &'a LsColors,
-        config: ConfigMap,
+        peek_value: bool,
+        tail: bool,
+        cwd: &str,
     ) -> Self {
         Self {
             nu_config,
+            explore_config,
             style_computer,
-            config,
             lscolors,
-            peek_value: false,
-            reverse: false,
-            style: StyleConfig::default(),
+            peek_value,
+            tail,
+            cwd: cwd.to_string(),
         }
     }
-}
-
-fn run_pager(
-    engine_state: &EngineState,
-    stack: &mut Stack,
-    ctrlc: CtrlC,
-    pager: &mut Pager,
-    view: Option<Page>,
-    commands: CommandRegistry,
-) -> Result<Option<Value>> {
-    // setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, Clear(ClearType::All))?;
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut info = ViewInfo {
-        status: Some(Report::default()),
-        ..Default::default()
-    };
-
-    if let Some(text) = pager.message.take() {
-        info.status = Some(Report::message(text, Severity::Info));
-    }
-
-    let result = render_ui(
-        &mut terminal,
-        engine_state,
-        stack,
-        ctrlc,
-        pager,
-        &mut info,
-        view,
-        commands,
-    )?;
-
-    // restore terminal
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
-
-    Ok(result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -233,7 +181,6 @@ fn render_ui(
     term: &mut Terminal,
     engine_state: &EngineState,
     stack: &mut Stack,
-    ctrlc: CtrlC,
     pager: &mut Pager<'_>,
     info: &mut ViewInfo,
     view: Option<Page>,
@@ -243,21 +190,24 @@ fn render_ui(
     let mut view_stack = ViewStack::new(view, Vec::new());
 
     loop {
-        // handle CTRLC event
-        if let Some(ctrlc) = ctrlc.clone() {
-            if ctrlc.load(Ordering::SeqCst) {
-                break Ok(None);
-            }
+        if engine_state.signals().interrupted() {
+            break Ok(None);
         }
 
         let mut layout = Layout::default();
         {
             let info = info.clone();
             term.draw(|f| {
-                draw_frame(f, &mut view_stack.view, pager, &mut layout, info);
+                draw_frame(f, &mut view_stack.curr_view, pager, &mut layout, info);
             })?;
         }
 
+        // Note that this will return within the configured tick_rate of events. In particular this
+        // means this loop keeps redrawing the UI about 4 times a second, whether it needs to or
+        // not. That's OK-ish because ratatui will detect real changes and not send unnecessary
+        // output to the terminal (something that may especially be important with ssh). While not
+        // needed at the moment, the idea is that this behavior allows for some degree of
+        // animation (so that the UI can update over time, even without user input).
         let transition = handle_events(
             engine_state,
             stack,
@@ -266,50 +216,48 @@ fn render_ui(
             info,
             &mut pager.search_buf,
             &mut pager.cmd_buf,
-            view_stack.view.as_mut().map(|p| &mut p.view),
+            view_stack.curr_view.as_mut().map(|p| &mut p.view),
         );
 
-        if let Some(transition) = transition {
-            let (exit, cmd_name) = react_to_event_result(
-                transition,
-                engine_state,
-                &commands,
-                pager,
-                &mut view_stack,
-                stack,
-                info,
-            );
+        let (exit, cmd_name) = react_to_event_result(
+            transition,
+            engine_state,
+            &commands,
+            pager,
+            &mut view_stack,
+            stack,
+            info,
+        );
 
-            if let Some(value) = exit {
-                break Ok(value);
+        if let Some(value) = exit {
+            break Ok(value);
+        }
+
+        if !cmd_name.is_empty() {
+            if let Some(r) = info.report.as_mut() {
+                r.message = cmd_name;
+                r.level = Severity::Success;
+            } else {
+                info.report = Some(Report::success(cmd_name));
             }
 
-            if !cmd_name.is_empty() {
-                if let Some(r) = info.report.as_mut() {
-                    r.message = cmd_name;
-                    r.level = Severity::Success;
-                } else {
-                    info.report = Some(Report::success(cmd_name));
-                }
-
-                let info = info.clone();
-                term.draw(|f| {
-                    draw_info(f, pager, info);
-                })?;
-            }
+            let info = info.clone();
+            term.draw(|f| {
+                draw_info(f, pager, info);
+            })?;
         }
 
         if pager.cmd_buf.run_cmd {
             let args = pager.cmd_buf.buf_cmd2.clone();
             pager.cmd_buf.run_cmd = false;
-            pager.cmd_buf.buf_cmd2 = String::new();
+            pager.cmd_buf.buf_cmd2.clear();
 
             let out =
                 pager_run_command(engine_state, stack, pager, &mut view_stack, &commands, args);
             match out {
                 Ok(result) => {
                     if result.exit {
-                        break Ok(peak_value_from_view(&mut view_stack.view, pager));
+                        break Ok(peek_value_from_view(&mut view_stack.curr_view, pager));
                     }
 
                     if result.view_change && !result.cmd_name.is_empty() {
@@ -343,21 +291,21 @@ fn react_to_event_result(
 ) -> (Option<Option<Value>>, String) {
     match status {
         Transition::Exit => (
-            Some(peak_value_from_view(&mut view_stack.view, pager)),
+            Some(peek_value_from_view(&mut view_stack.curr_view, pager)),
             String::default(),
         ),
         Transition::Ok => {
             let exit = view_stack.stack.is_empty();
             if exit {
                 return (
-                    Some(peak_value_from_view(&mut view_stack.view, pager)),
+                    Some(peek_value_from_view(&mut view_stack.curr_view, pager)),
                     String::default(),
                 );
             }
 
             // try to pop the view stack
             if let Some(v) = view_stack.stack.pop() {
-                view_stack.view = Some(v);
+                view_stack.curr_view = Some(v);
             }
 
             (None, String::default())
@@ -366,7 +314,7 @@ fn react_to_event_result(
             let out = pager_run_command(engine_state, stack, pager, view_stack, commands, cmd);
             match out {
                 Ok(result) if result.exit => (
-                    Some(peak_value_from_view(&mut view_stack.view, pager)),
+                    Some(peek_value_from_view(&mut view_stack.curr_view, pager)),
                     String::default(),
                 ),
                 Ok(result) => (None, result.cmd_name),
@@ -376,12 +324,17 @@ fn react_to_event_result(
                 }
             }
         }
+        Transition::None => (None, String::default()),
     }
 }
 
-fn peak_value_from_view(view: &mut Option<Page>, pager: &mut Pager<'_>) -> Option<Value> {
-    let view = view.as_mut().map(|p| &mut p.view);
-    try_to_peek_value(pager, view)
+fn peek_value_from_view(view: &mut Option<Page>, pager: &mut Pager<'_>) -> Option<Value> {
+    if pager.config.peek_value {
+        let view = view.as_mut().map(|p| &mut p.view);
+        view.and_then(|v| v.exit())
+    } else {
+        None
+    }
 }
 
 fn draw_frame(
@@ -401,7 +354,7 @@ fn draw_frame(
 
     draw_info(f, pager, info);
 
-    highlight_search_results(f, pager, layout, pager.config.style.highlight);
+    highlight_search_results(f, pager, layout, pager.config.explore_config.highlight);
     set_cursor_cmd_bar(f, area, pager);
 }
 
@@ -411,19 +364,25 @@ fn draw_info(f: &mut Frame, pager: &mut Pager<'_>, info: ViewInfo) {
     if let Some(report) = info.status {
         let last_2nd_line = area.bottom().saturating_sub(2);
         let area = Rect::new(area.left(), last_2nd_line, area.width, 1);
-        render_status_bar(f, area, report, &pager.config.style);
+        render_status_bar(f, area, report, pager.config.explore_config);
     }
 
     {
         let last_line = area.bottom().saturating_sub(1);
         let area = Rect::new(area.left(), last_line, area.width, 1);
-        render_cmd_bar(f, area, pager, info.report, &pager.config.style);
+        render_cmd_bar(f, area, pager, info.report, pager.config.explore_config);
     }
 }
 
 fn create_view_config<'a>(pager: &'a Pager<'_>) -> ViewConfig<'a> {
     let cfg = &pager.config;
-    ViewConfig::new(cfg.nu_config, cfg.style_computer, &cfg.config, cfg.lscolors)
+    ViewConfig::new(
+        cfg.nu_config,
+        cfg.explore_config,
+        cfg.style_computer,
+        cfg.lscolors,
+        &pager.config.cwd,
+    )
 }
 
 fn pager_run_command(
@@ -460,54 +419,32 @@ fn run_command(
     match command {
         Command::Reactive(mut command) => {
             // what we do we just replace the view.
-            let value = view_stack.view.as_mut().and_then(|p| p.view.exit());
+            let value = view_stack.curr_view.as_mut().and_then(|p| p.view.exit());
             let transition = command.react(engine_state, stack, pager, value)?;
             match transition {
-                Transition::Ok => {
-                    // so we basically allow a change of a config inside a command,
-                    // and cause of this we wanna update all of our views.
-                    //
-                    // THOUGH: MOST LIKELY IT WON'T BE CHANGED AND WE DO A WASTE.......
-
-                    update_view_stack_setup(view_stack, &pager.config);
-
-                    Ok(CmdResult::new(false, false, String::new()))
-                }
+                Transition::Ok => Ok(CmdResult::new(false, false, String::new())),
                 Transition::Exit => Ok(CmdResult::new(true, false, String::new())),
                 Transition::Cmd { .. } => todo!("not used so far"),
+                Transition::None => panic!("Transition::None not expected from command.react()"),
             }
         }
-        Command::View { mut cmd, is_light } => {
+        Command::View { mut cmd, stackable } => {
             // what we do we just replace the view.
-            let value = view_stack.view.as_mut().and_then(|p| p.view.exit());
-            let mut new_view = cmd.spawn(engine_state, stack, value)?;
-            if let Some(view) = view_stack.view.take() {
-                if !view.is_light {
+            let value = view_stack.curr_view.as_mut().and_then(|p| p.view.exit());
+            let view_cfg = create_view_config(pager);
+
+            let new_view = cmd.spawn(engine_state, stack, value, &view_cfg)?;
+            if let Some(view) = view_stack.curr_view.take() {
+                if view.stackable {
                     view_stack.stack.push(view);
                 }
             }
 
-            update_view_setup(&mut new_view, &pager.config);
-            view_stack.view = Some(Page::raw(new_view, is_light));
+            view_stack.curr_view = Some(Page::raw(new_view, stackable));
 
             Ok(CmdResult::new(false, true, cmd.name().to_owned()))
         }
     }
-}
-
-fn update_view_stack_setup(view_stack: &mut ViewStack, cfg: &PagerConfig<'_>) {
-    if let Some(page) = view_stack.view.as_mut() {
-        update_view_setup(&mut page.view, cfg);
-    }
-
-    for page in &mut view_stack.stack {
-        update_view_setup(&mut page.view, cfg);
-    }
-}
-
-fn update_view_setup(view: &mut Box<dyn View>, cfg: &PagerConfig<'_>) {
-    let cfg = ViewConfig::new(cfg.nu_config, cfg.style_computer, &cfg.config, cfg.lscolors);
-    view.setup(cfg);
 }
 
 fn set_cursor_cmd_bar(f: &mut Frame, area: Rect, pager: &Pager) {
@@ -528,18 +465,7 @@ fn set_cursor_cmd_bar(f: &mut Frame, area: Rect, pager: &Pager) {
     }
 }
 
-fn try_to_peek_value<V>(pager: &mut Pager, view: Option<&mut V>) -> Option<Value>
-where
-    V: View,
-{
-    if pager.config.peek_value {
-        view.and_then(|v| v.exit())
-    } else {
-        None
-    }
-}
-
-fn render_status_bar(f: &mut Frame, area: Rect, report: Report, theme: &StyleConfig) {
+fn render_status_bar(f: &mut Frame, area: Rect, report: Report, theme: &ExploreConfig) {
     let msg_style = report_msg_style(&report, theme, theme.status_bar_text);
     let mut status_bar = create_status_bar(report);
     status_bar.set_background_style(theme.status_bar_background);
@@ -560,11 +486,11 @@ fn create_status_bar(report: Report) -> StatusBar {
     )
 }
 
-fn report_msg_style(report: &Report, theme: &StyleConfig, style: NuStyle) -> NuStyle {
+fn report_msg_style(report: &Report, config: &ExploreConfig, style: NuStyle) -> NuStyle {
     if matches!(report.level, Severity::Info) {
         style
     } else {
-        report_level_style(report.level, theme)
+        report_level_style(report.level, config)
     }
 }
 
@@ -573,15 +499,15 @@ fn render_cmd_bar(
     area: Rect,
     pager: &Pager,
     report: Option<Report>,
-    theme: &StyleConfig,
+    config: &ExploreConfig,
 ) {
     if let Some(report) = report {
-        let style = report_msg_style(&report, theme, theme.cmd_bar_text);
+        let style = report_msg_style(&report, config, config.cmd_bar_text);
         let bar = CommandBar::new(
             &report.message,
             &report.context1,
             style,
-            theme.cmd_bar_background,
+            config.cmd_bar_background,
         );
 
         f.render_widget(bar, area);
@@ -589,16 +515,16 @@ fn render_cmd_bar(
     }
 
     if pager.cmd_buf.is_cmd_input {
-        render_cmd_bar_cmd(f, area, pager, theme);
+        render_cmd_bar_cmd(f, area, pager, config);
         return;
     }
 
     if pager.search_buf.is_search_input || !pager.search_buf.buf_cmd_input.is_empty() {
-        render_cmd_bar_search(f, area, pager, theme);
+        render_cmd_bar_search(f, area, pager, config);
     }
 }
 
-fn render_cmd_bar_search(f: &mut Frame, area: Rect, pager: &Pager<'_>, theme: &StyleConfig) {
+fn render_cmd_bar_search(f: &mut Frame, area: Rect, pager: &Pager<'_>, config: &ExploreConfig) {
     if pager.search_buf.search_results.is_empty() && !pager.search_buf.is_search_input {
         let message = format!("Pattern not found: {}", pager.search_buf.buf_cmd_input);
         let style = NuStyle {
@@ -607,7 +533,7 @@ fn render_cmd_bar_search(f: &mut Frame, area: Rect, pager: &Pager<'_>, theme: &S
             ..Default::default()
         };
 
-        let bar = CommandBar::new(&message, "", style, theme.cmd_bar_background);
+        let bar = CommandBar::new(&message, "", style, config.cmd_bar_background);
         f.render_widget(bar, area);
         return;
     }
@@ -626,11 +552,11 @@ fn render_cmd_bar_search(f: &mut Frame, area: Rect, pager: &Pager<'_>, theme: &S
         format!("[{index}/{total}]")
     };
 
-    let bar = CommandBar::new(&text, &info, theme.cmd_bar_text, theme.cmd_bar_background);
+    let bar = CommandBar::new(&text, &info, config.cmd_bar_text, config.cmd_bar_background);
     f.render_widget(bar, area);
 }
 
-fn render_cmd_bar_cmd(f: &mut Frame, area: Rect, pager: &Pager, theme: &StyleConfig) {
+fn render_cmd_bar_cmd(f: &mut Frame, area: Rect, pager: &Pager, config: &ExploreConfig) {
     let mut input = pager.cmd_buf.buf_cmd2.as_str();
     if input.len() > area.width as usize + 1 {
         // in such case we take last max_cmd_len chars
@@ -648,7 +574,7 @@ fn render_cmd_bar_cmd(f: &mut Frame, area: Rect, pager: &Pager, theme: &StyleCon
     let prefix = ':';
     let text = format!("{prefix}{input}");
 
-    let bar = CommandBar::new(&text, "", theme.cmd_bar_text, theme.cmd_bar_background);
+    let bar = CommandBar::new(&text, "", config.cmd_bar_text, config.cmd_bar_background);
     f.render_widget(bar, area);
 }
 
@@ -698,34 +624,26 @@ fn handle_events<V: View>(
     search: &mut SearchBuf,
     command: &mut CommandBuf,
     mut view: Option<&mut V>,
-) -> Option<Transition> {
-    let key = match events.next() {
+) -> Transition {
+    // We are only interested in Pressed events;
+    // It's crucial because there are cases where terminal MIGHT produce false events;
+    // 2 events 1 for release 1 for press.
+    // Want to react only on 1 of them so we do.
+    let mut key = match events.next_key_press() {
         Ok(Some(key)) => key,
-        _ => return None,
+        Ok(None) => return Transition::None,
+        Err(e) => {
+            log::error!("Failed to read key event: {e}");
+            return Transition::None;
+        }
     };
-
-    let result = handle_event(
-        engine_state,
-        stack,
-        layout,
-        info,
-        search,
-        command,
-        view.as_deref_mut(),
-        key,
-    );
-
-    if result.is_some() {
-        return result;
-    }
 
     // Sometimes we get a BIG list of events;
     // for example when someone scrolls via a mouse either UP or DOWN.
     // This MIGHT cause freezes as we have a 400 delay for a next command read.
     //
     // To eliminate that we are trying to read all possible commands which we should act upon.
-
-    while let Ok(Some(key)) = events.try_next() {
+    loop {
         let result = handle_event(
             engine_state,
             stack,
@@ -736,13 +654,18 @@ fn handle_events<V: View>(
             view.as_deref_mut(),
             key,
         );
-
-        if result.is_some() {
+        if !matches!(result, Transition::None) {
             return result;
         }
+        match events.try_next_key_press() {
+            Ok(Some(next_key)) => key = next_key,
+            Ok(None) => return Transition::None,
+            Err(e) => {
+                log::error!("Failed to peek key event: {e}");
+                return Transition::None;
+            }
+        }
     }
-
-    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -755,29 +678,29 @@ fn handle_event<V: View>(
     command: &mut CommandBuf,
     mut view: Option<&mut V>,
     key: KeyEvent,
-) -> Option<Transition> {
+) -> Transition {
     if handle_exit_key_event(&key) {
-        return Some(Transition::Exit);
+        return Transition::Exit;
     }
 
     if handle_general_key_events1(&key, search, command, view.as_deref_mut()) {
-        return None;
+        return Transition::None;
     }
 
     if let Some(view) = &mut view {
         let t = view.handle_input(engine_state, stack, layout, info, key);
         match t {
-            Some(Transition::Exit) => return Some(Transition::Ok),
-            Some(Transition::Cmd(cmd)) => return Some(Transition::Cmd(cmd)),
-            Some(Transition::Ok) => return None,
-            None => {}
+            Transition::Exit => return Transition::Ok,
+            Transition::Cmd(cmd) => return Transition::Cmd(cmd),
+            Transition::Ok => return Transition::None,
+            Transition::None => {}
         }
     }
 
     // was not handled so we must check our default controls
     handle_general_key_events2(&key, search, command, view, info);
 
-    None
+    Transition::None
 }
 
 fn handle_exit_key_event(key: &KeyEvent) -> bool {
@@ -821,21 +744,21 @@ fn handle_general_key_events2<V>(
 {
     match key.code {
         KeyCode::Char('?') => {
-            search.buf_cmd_input = String::new();
+            search.buf_cmd_input.clear();
             search.is_search_input = true;
             search.is_reversed = true;
 
             info.report = None;
         }
         KeyCode::Char('/') => {
-            search.buf_cmd_input = String::new();
+            search.buf_cmd_input.clear();
             search.is_search_input = true;
             search.is_reversed = false;
 
             info.report = None;
         }
         KeyCode::Char(':') => {
-            command.buf_cmd2 = String::new();
+            command.buf_cmd2.clear();
             command.is_cmd_input = true;
             command.cmd_exec_info = None;
 
@@ -844,7 +767,7 @@ fn handle_general_key_events2<V>(
         KeyCode::Char('n') => {
             if !search.search_results.is_empty() {
                 if search.buf_cmd_input.is_empty() {
-                    search.buf_cmd_input = search.buf_cmd.clone();
+                    search.buf_cmd_input.clone_from(&search.buf_cmd);
                 }
 
                 if search.search_index + 1 == search.search_results.len() {
@@ -870,7 +793,7 @@ fn search_input_key_event(
 ) -> bool {
     match &key.code {
         KeyCode::Esc => {
-            buf.buf_cmd_input = String::new();
+            buf.buf_cmd_input.clear();
 
             if let Some(view) = view {
                 if !buf.buf_cmd.is_empty() {
@@ -885,7 +808,7 @@ fn search_input_key_event(
             true
         }
         KeyCode::Enter => {
-            buf.buf_cmd = buf.buf_cmd_input.clone();
+            buf.buf_cmd.clone_from(&buf.buf_cmd_input);
             buf.is_search_input = false;
 
             true
@@ -944,10 +867,8 @@ fn search_pattern(data: impl Iterator<Item = String>, pat: &str, rev: bool) -> V
         }
     }
 
-    if !rev {
-        matches.sort();
-    } else {
-        matches.sort_by(|a, b| b.cmp(a));
+    if rev {
+        matches.reverse();
     }
 
     matches
@@ -989,7 +910,8 @@ fn cmd_input_key_event(buf: &mut CommandBuf, key: &KeyEvent) -> bool {
                     buf.cmd_history_pos + 1,
                     buf.cmd_history.len().saturating_sub(1),
                 );
-                buf.buf_cmd2 = buf.cmd_history[buf.cmd_history_pos].clone();
+                buf.buf_cmd2
+                    .clone_from(&buf.cmd_history[buf.cmd_history_pos]);
             }
 
             true
@@ -998,7 +920,8 @@ fn cmd_input_key_event(buf: &mut CommandBuf, key: &KeyEvent) -> bool {
             if !buf.cmd_history.is_empty() {
                 buf.cmd_history_allow = true;
                 buf.cmd_history_pos = buf.cmd_history_pos.saturating_sub(1);
-                buf.buf_cmd2 = buf.cmd_history[buf.cmd_history_pos].clone();
+                buf.buf_cmd2
+                    .clone_from(&buf.cmd_history[buf.cmd_history_pos]);
             }
 
             true
@@ -1007,72 +930,12 @@ fn cmd_input_key_event(buf: &mut CommandBuf, key: &KeyEvent) -> bool {
     }
 }
 
-fn value_as_style(style: &mut nu_ansi_term::Style, value: &Value) -> bool {
-    match value.as_string() {
-        Ok(s) => {
-            *style = lookup_ansi_color_style(&s);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-fn set_config(hm: &mut HashMap<String, Value>, path: &[&str], value: Value) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-
-    let key = path[0];
-
-    if !hm.contains_key(key) {
-        hm.insert(
-            key.to_string(),
-            Value::record(Record::new(), NuSpan::unknown()),
-        );
-    }
-
-    let val = hm.get_mut(key).expect("...");
-
-    if path.len() == 1 {
-        *val = value;
-        return true;
-    }
-
-    match val {
-        Value::Record { val: record, .. } => {
-            if path.len() == 2 {
-                let key = path[1];
-
-                record.insert(key, value);
-            } else {
-                let mut hm2: HashMap<String, Value> = HashMap::new();
-                for (k, v) in record.iter() {
-                    hm2.insert(k.to_string(), v.clone());
-                }
-
-                let result = set_config(&mut hm2, &path[1..], value);
-                if !result {
-                    *val = map_into_value(hm2);
-                }
-
-                if path.len() == 2 {
-                } else {
-                    return false;
-                }
-            }
-
-            true
-        }
-        _ => false,
-    }
-}
-
-fn report_level_style(level: Severity, theme: &StyleConfig) -> NuStyle {
+fn report_level_style(level: Severity, config: &ExploreConfig) -> NuStyle {
     match level {
-        Severity::Info => theme.status_info,
-        Severity::Success => theme.status_success,
-        Severity::Warn => theme.status_warn,
-        Severity::Err => theme.status_error,
+        Severity::Info => config.status_info,
+        Severity::Success => config.status_success,
+        Severity::Warn => config.status_warn,
+        Severity::Err => config.status_error,
     }
 }
 
@@ -1097,30 +960,35 @@ impl Position {
 
 pub struct Page {
     pub view: Box<dyn View>,
-    pub is_light: bool,
+    /// Controls what happens when this view is the current view and a new view is created.
+    /// If true, view will be pushed to the stack, otherwise, it will be deleted.
+    pub stackable: bool,
 }
 
 impl Page {
-    pub fn raw(view: Box<dyn View>, is_light: bool) -> Self {
-        Self { view, is_light }
+    pub fn raw(view: Box<dyn View>, stackable: bool) -> Self {
+        Self { view, stackable }
     }
 
-    pub fn new<V>(view: V, is_light: bool) -> Self
+    pub fn new<V>(view: V, stackable: bool) -> Self
     where
         V: View + 'static,
     {
-        Self::raw(Box::new(view), is_light)
+        Self::raw(Box::new(view), stackable)
     }
 }
 
 struct ViewStack {
-    view: Option<Page>,
+    curr_view: Option<Page>,
     stack: Vec<Page>,
 }
 
 impl ViewStack {
     fn new(view: Option<Page>, stack: Vec<Page>) -> Self {
-        Self { view, stack }
+        Self {
+            curr_view: view,
+            stack,
+        }
     }
 }
 

@@ -1,7 +1,4 @@
-use nu_engine::scope::ScopeData;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Type};
+use nu_engine::{command_prelude::*, scope::ScopeData};
 
 #[derive(Clone)]
 pub struct ScopeEngineStats;
@@ -18,7 +15,7 @@ impl Command for ScopeEngineStats {
             .category(Category::Core)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Output stats on the engine in the current state."
     }
 

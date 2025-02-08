@@ -1,9 +1,8 @@
 use crate::date::utils::parse_date_from_string;
 use chrono::{DateTime, FixedOffset, Local};
 use chrono_humanize::HumanTime;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use nu_engine::command_prelude::*;
+
 #[derive(Clone)]
 pub struct SubCommand;
 
@@ -22,7 +21,7 @@ impl Command for SubCommand {
             .category(Category::Date)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Print a 'humanized' format for the date, relative to now."
     }
 
@@ -51,7 +50,7 @@ impl Command for SubCommand {
         if matches!(input, PipelineData::Empty) {
             return Err(ShellError::PipelineEmpty { dst_span: head });
         }
-        input.map(move |value| helper(value, head), engine_state.ctrlc.clone())
+        input.map(move |value| helper(value, head), engine_state.signals())
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -79,9 +78,11 @@ fn helper(value: Value, head: Span) -> Value {
         }
         Value::Date { val, .. } => Value::string(humanize_date(val), head),
         _ => Value::error(
-            ShellError::DatetimeParseError {
-                msg: value.debug_value(),
-                span: head,
+            ShellError::OnlySupportsThisInputType {
+                exp_input_type: "date, string (that represents datetime), or nothing".into(),
+                wrong_type: value.get_type().to_string(),
+                dst_span: head,
+                src_span: span,
             },
             head,
         ),

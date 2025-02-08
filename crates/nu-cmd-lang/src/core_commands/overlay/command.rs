@@ -1,9 +1,5 @@
-use nu_engine::get_full_help;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
-};
+use nu_engine::{command_prelude::*, get_full_help};
+use nu_protocol::engine::CommandType;
 
 #[derive(Clone)]
 pub struct Overlay;
@@ -19,19 +15,19 @@ impl Command for Overlay {
             .input_output_types(vec![(Type::Nothing, Type::String)])
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Commands for manipulating overlays."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"This command is a parser keyword. For details, check:
   https://www.nushell.sh/book/thinking_in_nu.html
 
   You must use one of the following subcommands. Using this command as-is will only produce this help message."#
     }
 
-    fn is_parser_keyword(&self) -> bool {
-        true
+    fn command_type(&self) -> CommandType {
+        CommandType::Keyword
     }
 
     fn run(
@@ -41,16 +37,6 @@ impl Command for Overlay {
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        Ok(Value::string(
-            get_full_help(
-                &Overlay.signature(),
-                &[],
-                engine_state,
-                stack,
-                self.is_parser_keyword(),
-            ),
-            call.head,
-        )
-        .into_pipeline_data())
+        Ok(Value::string(get_full_help(self, engine_state, stack), call.head).into_pipeline_data())
     }
 }

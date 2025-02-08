@@ -26,15 +26,6 @@ pub struct Deserializer<Iter: Iterator<Item = u8>> {
     state: State,
 }
 
-// macro_rules! try_or_invalid {
-//     ($self_:expr, $e:expr) => {
-//         match $e {
-//             Some(v) => v,
-//             None => { return Err($self_.error(ErrorCode::InvalidNumber)); }
-//         }
-//     }
-// }
-
 impl<Iter> Deserializer<Iter>
 where
     Iter: Iterator<Item = u8>,
@@ -269,8 +260,8 @@ where
                     }
                     _ => {
                         if chf == b'-' || chf.is_ascii_digit() {
-                            let mut pn = ParseNumber::new(self.str_buf.iter().copied());
-                            match pn.parse(false) {
+                            let mut parser = ParseNumber::new(self.str_buf.iter().copied());
+                            match parser.parse(false) {
                                 Ok(Number::F64(v)) => {
                                     self.rdr.uneat_char(ch);
                                     return visitor.visit_f64(v);
@@ -514,7 +505,7 @@ where
     }
 }
 
-impl<'de, 'a, Iter> de::Deserializer<'de> for &'a mut Deserializer<Iter>
+impl<'de, Iter> de::Deserializer<'de> for &mut Deserializer<Iter>
 where
     Iter: Iterator<Item = u8>,
 {
@@ -574,7 +565,7 @@ impl<'a, Iter: Iterator<Item = u8>> SeqVisitor<'a, Iter> {
     }
 }
 
-impl<'de, 'a, Iter> de::SeqAccess<'de> for SeqVisitor<'a, Iter>
+impl<'de, Iter> de::SeqAccess<'de> for SeqVisitor<'_, Iter>
 where
     Iter: Iterator<Item = u8>,
 {
@@ -625,7 +616,7 @@ impl<'a, Iter: Iterator<Item = u8>> MapVisitor<'a, Iter> {
     }
 }
 
-impl<'de, 'a, Iter> de::MapAccess<'de> for MapVisitor<'a, Iter>
+impl<'de, Iter> de::MapAccess<'de> for MapVisitor<'_, Iter>
 where
     Iter: Iterator<Item = u8>,
 {
@@ -680,7 +671,7 @@ where
     }
 }
 
-impl<'de, 'a, Iter> de::VariantAccess<'de> for &'a mut Deserializer<Iter>
+impl<'de, Iter> de::VariantAccess<'de> for &mut Deserializer<Iter>
 where
     Iter: Iterator<Item = u8>,
 {

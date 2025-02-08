@@ -1,10 +1,7 @@
 use nu_cmd_base::input_handler::{operate, CellPathOnlyArgs};
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::{Call, CellPath},
-    engine::{Command, EngineState, Stack},
-    record, Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+
+use nu_utils::get_system_locale;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -21,8 +18,8 @@ impl Command for SubCommand {
                 (Type::Number, Type::Filesize),
                 (Type::String, Type::Filesize),
                 (Type::Filesize, Type::Filesize),
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (Type::Record(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::table()),
+                (Type::record(), Type::record()),
                 (
                     Type::List(Box::new(Type::Int)),
                     Type::List(Box::new(Type::Filesize)),
@@ -54,7 +51,7 @@ impl Command for SubCommand {
             .category(Category::Conversions)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Convert value to filesize."
     }
 
@@ -71,7 +68,7 @@ impl Command for SubCommand {
     ) -> Result<PipelineData, ShellError> {
         let cell_paths: Vec<CellPath> = call.rest(engine_state, stack, 0)?;
         let args = CellPathOnlyArgs::from(cell_paths);
-        operate(action, args, input, call.head, engine_state.ctrlc.clone())
+        operate(action, args, input, call.head, engine_state.signals())
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -110,17 +107,22 @@ impl Command for SubCommand {
                 example: "4KB | into filesize",
                 result: Some(Value::test_filesize(4000)),
             },
+            Example {
+                description: "Convert string with unit to filesize",
+                example: "'-1KB' | into filesize",
+                result: Some(Value::test_filesize(-1000)),
+            },
         ]
     }
 }
 
-pub fn action(input: &Value, _args: &CellPathOnlyArgs, span: Span) -> Value {
+fn action(input: &Value, _args: &CellPathOnlyArgs, span: Span) -> Value {
     let value_span = input.span();
     match input {
         Value::Filesize { .. } => input.clone(),
         Value::Int { val, .. } => Value::filesize(*val, value_span),
         Value::Float { val, .. } => Value::filesize(*val as i64, value_span),
-        Value::String { val, .. } => match int_from_string(val, value_span) {
+        Value::String { val, .. } => match i64_from_string(val, value_span) {
             Ok(val) => Value::filesize(val, value_span),
             Err(error) => Value::error(error, value_span),
         },
@@ -136,15 +138,54 @@ pub fn action(input: &Value, _args: &CellPathOnlyArgs, span: Span) -> Value {
         ),
     }
 }
-fn int_from_string(a_string: &str, span: Span) -> Result<i64, ShellError> {
-    match a_string.trim().parse::<bytesize::ByteSize>() {
-        Ok(n) => Ok(n.0 as i64),
-        Err(_) => Err(ShellError::CantConvert {
-            to_type: "int".into(),
-            from_type: "string".into(),
-            span,
-            help: None,
-        }),
+
+fn i64_from_string(a_string: &str, span: Span) -> Result<i64, ShellError> {
+    // Get the Locale so we know what the thousands separator is
+    let locale = get_system_locale();
+
+    // Now that we know the locale, get the thousands separator and remove it
+    // so strings like 1,123,456 can be parsed as 1123456
+    let no_comma_string = a_string.replace(locale.separator(), "");
+    let clean_string = no_comma_string.trim();
+
+    // Hadle negative file size
+    if let Some(stripped_negative_string) = clean_string.strip_prefix('-') {
+        match stripped_negative_string.parse::<bytesize::ByteSize>() {
+            Ok(n) => i64_from_byte_size(n, true, span),
+            Err(_) => Err(string_convert_error(span)),
+        }
+    } else if let Some(stripped_positive_string) = clean_string.strip_prefix('+') {
+        match stripped_positive_string.parse::<bytesize::ByteSize>() {
+            Ok(n) if stripped_positive_string.starts_with(|c: char| c.is_ascii_digit()) => {
+                i64_from_byte_size(n, false, span)
+            }
+            _ => Err(string_convert_error(span)),
+        }
+    } else {
+        match clean_string.parse::<bytesize::ByteSize>() {
+            Ok(n) => i64_from_byte_size(n, false, span),
+            Err(_) => Err(string_convert_error(span)),
+        }
+    }
+}
+
+fn i64_from_byte_size(
+    byte_size: bytesize::ByteSize,
+    is_negative: bool,
+    span: Span,
+) -> Result<i64, ShellError> {
+    match i64::try_from(byte_size.as_u64()) {
+        Ok(n) => Ok(if is_negative { -n } else { n }),
+        Err(_) => Err(string_convert_error(span)),
+    }
+}
+
+fn string_convert_error(span: Span) -> ShellError {
+    ShellError::CantConvert {
+        to_type: "filesize".into(),
+        from_type: "string".into(),
+        span,
+        help: None,
     }
 }
 

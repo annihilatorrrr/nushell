@@ -1,10 +1,5 @@
-use nu_engine::env::current_dir;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type, Value,
-};
+#[allow(deprecated)]
+use nu_engine::{command_prelude::*, env::current_dir};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -15,18 +10,18 @@ impl Command for Mktemp {
         "mktemp"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Create temporary files or directories using uutils/coreutils mktemp."
     }
 
     fn search_terms(&self) -> Vec<&str> {
         vec![
-            "coreutils",
             "create",
             "directory",
             "file",
             "folder",
             "temporary",
+            "coreutils",
         ]
     }
 
@@ -96,6 +91,7 @@ impl Command for Mktemp {
         } else if directory || tmpdir {
             Some(std::env::temp_dir())
         } else {
+            #[allow(deprecated)]
             Some(current_dir(engine_state, stack)?)
         };
 
@@ -110,14 +106,10 @@ impl Command for Mktemp {
         };
 
         let res = match uu_mktemp::mktemp(&options) {
-            Ok(res) => {
-                res.into_os_string()
-                    .into_string()
-                    .map_err(|e| ShellError::IOErrorSpanned {
-                        msg: e.to_string_lossy().to_string(),
-                        span,
-                    })?
-            }
+            Ok(res) => res
+                .into_os_string()
+                .into_string()
+                .map_err(|_| ShellError::NonUtf8 { span })?,
             Err(e) => {
                 return Err(ShellError::GenericError {
                     error: format!("{}", e),

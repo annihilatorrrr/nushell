@@ -1,7 +1,5 @@
-use nu_engine::eval_block;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, SyntaxShape, Type};
+use nu_engine::{command_prelude::*, get_eval_block};
+use nu_protocol::engine::CommandType;
 
 #[derive(Clone)]
 pub struct Let;
@@ -11,7 +9,7 @@ impl Command for Let {
         "let"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Create a variable and give it a value."
     }
 
@@ -28,13 +26,13 @@ impl Command for Let {
             .category(Category::Core)
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"This command is a parser keyword. For details, check:
   https://www.nushell.sh/book/thinking_in_nu.html"#
     }
 
-    fn is_parser_keyword(&self) -> bool {
-        true
+    fn command_type(&self) -> CommandType {
+        CommandType::Keyword
     }
 
     fn search_terms(&self) -> Vec<&str> {
@@ -48,6 +46,9 @@ impl Command for Let {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
+        // This is compiled specially by the IR compiler. The code here is never used when
+        // running in IR mode.
+        let call = call.assert_ast_call()?;
         let var_id = call
             .positional_nth(0)
             .expect("checked through parser")
@@ -61,8 +62,25 @@ impl Command for Let {
             .expect("internal error: missing right hand side");
 
         let block = engine_state.get_block(block_id);
-        let pipeline_data = eval_block(engine_state, stack, block, input, true, false)?;
-        stack.add_var(var_id, pipeline_data.into_value(call.head));
+        let eval_block = get_eval_block(engine_state);
+        let stack = &mut stack.start_collect_value();
+        let pipeline_data = eval_block(engine_state, stack, block, input)?;
+        let value = pipeline_data.into_value(call.head)?;
+
+        // if given variable type is Glob, and our result is string
+        // then nushell need to convert from Value::String to Value::Glob
+        // it's assigned by demand, then it's not quoted, and it's required to expand
+        // if we pass it to other commands.
+        let var_type = &engine_state.get_var(var_id).ty;
+        let val_span = value.span();
+        let value = match value {
+            Value::String { val, .. } if var_type == &Type::Glob => {
+                Value::glob(val, false, val_span)
+            }
+            value => value,
+        };
+
+        stack.add_var(var_id, value);
         Ok(PipelineData::empty())
     }
 

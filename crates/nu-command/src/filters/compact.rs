@@ -1,8 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::Call, engine::Command, engine::EngineState, engine::Stack, record, Category, Example,
-    PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Compact;
@@ -14,19 +10,10 @@ impl Command for Compact {
 
     fn signature(&self) -> Signature {
         Signature::build("compact")
-            .input_output_types(vec![
-                (
-                    Type::List(Box::new(Type::Any)),
-                    Type::List(Box::new(Type::Any)),
-                ),
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (
-                    // TODO: Should table be a subtype of List<Any>? If so then this
-                    // entry would be unnecessary.
-                    Type::Table(vec![]),
-                    Type::List(Box::new(Type::Any)),
-                ),
-            ])
+            .input_output_types(vec![(
+                Type::List(Box::new(Type::Any)),
+                Type::List(Box::new(Type::Any)),
+            )])
             .switch(
                 "empty",
                 "also compact empty items like \"\", {}, and []",
@@ -40,8 +27,12 @@ impl Command for Compact {
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Creates a table with non-empty rows."
+    }
+
+    fn search_terms(&self) -> Vec<&str> {
+        vec!["empty", "remove"]
     }
 
     fn run(
@@ -149,7 +140,7 @@ pub fn compact(
                     _ => true,
                 }
             },
-            engine_state.ctrlc.clone(),
+            engine_state.signals(),
         )
         .map(|m| m.set_metadata(metadata))
 }

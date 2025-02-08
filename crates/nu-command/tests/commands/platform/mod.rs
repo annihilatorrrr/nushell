@@ -1,3 +1,3 @@
 mod ansi_;
-mod du;
+mod char_;
 mod kill;

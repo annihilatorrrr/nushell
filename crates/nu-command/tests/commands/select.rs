@@ -50,7 +50,7 @@ fn complex_nested_columns() {
         r#"
                 {sample}
                 | select nu."0xATYKARNU" nu.committers.name nu.releases.version
-                | get nu_releases_version
+                | get "nu.releases.version"
                 | where $it > "0.8"
                 | get 0
             "#
@@ -63,7 +63,7 @@ fn complex_nested_columns() {
 fn fails_if_given_unknown_column_name() {
     let actual = nu!(pipeline(
         r#"
-            echo [
+            [
                 [first_name, last_name, rusty_at, type];
 
                 [Andrés Robalino '10/11/2013' A]
@@ -71,7 +71,6 @@ fn fails_if_given_unknown_column_name() {
                 [Yehuda Katz '10/11/2013' A]
             ]
             | select rrusty_at first_name
-            | length
         "#
     ));
 
@@ -119,7 +118,7 @@ fn ignores_duplicate_columns_selected() {
 #[test]
 fn selects_a_row() {
     Playground::setup("select_test_1", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("notes.txt"), EmptyFile("arepas.txt")]);
+        sandbox.with_files(&[EmptyFile("notes.txt"), EmptyFile("arepas.txt")]);
 
         let actual = nu!(
             cwd: dirs.test(), pipeline(
@@ -138,7 +137,7 @@ fn selects_a_row() {
 #[test]
 fn selects_many_rows() {
     Playground::setup("select_test_2", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("notes.txt"), EmptyFile("arepas.txt")]);
+        sandbox.with_files(&[EmptyFile("notes.txt"), EmptyFile("arepas.txt")]);
 
         let actual = nu!(
             cwd: dirs.test(), pipeline(
@@ -172,7 +171,7 @@ fn select_ignores_errors_successfully2() {
 
 #[test]
 fn select_ignores_errors_successfully3() {
-    let actual = nu!("sys | select invalid_key? | to nuon");
+    let actual = nu!("{foo: bar} | select invalid_key? | to nuon");
 
     assert_eq!(actual.out, "{invalid_key: null}".to_string());
     assert!(actual.err.is_empty());
@@ -249,20 +248,20 @@ fn select_on_empty_list_returns_empty_list() {
 }
 
 #[test]
-fn select_columns_with_variable_list() {
+fn select_columns_with_list_spread() {
     let actual = nu!(r#"
         let columns = [a c];
-        echo [[a b c]; [1 2 3]] | select $columns | to nuon
+        echo [[a b c]; [1 2 3]] | select ...$columns | to nuon
         "#);
 
     assert_eq!(actual.out, "[[a, c]; [1, 3]]");
 }
 
 #[test]
-fn select_rows_with_variable_list() {
+fn select_rows_with_list_spread() {
     let actual = nu!(r#"
         let rows = [0 2];
-        echo [[a b c]; [1 2 3] [4 5 6] [7 8 9]] | select $rows | to nuon
+        echo [[a b c]; [1 2 3] [4 5 6] [7 8 9]] | select ...$rows | to nuon
         "#);
 
     assert_eq!(actual.out, "[[a, b, c]; [1, 2, 3], [7, 8, 9]]");
@@ -270,8 +269,14 @@ fn select_rows_with_variable_list() {
 
 #[test]
 fn select_single_row_with_variable() {
-    let actual = nu!("let idx = 2;[{a: 1, b: 2} {a: 3, b: 5} {a: 3}] | select $idx | to nuon");
+    let actual = nu!("let idx = 2; [{a: 1, b: 2} {a: 3, b: 5} {a: 3}] | select $idx | to nuon");
 
     assert_eq!(actual.out, "[[a]; [3]]".to_string());
     assert!(actual.err.is_empty());
+}
+
+#[test]
+fn select_with_negative_number_errors_out() {
+    let actual = nu!("[1 2 3] | select (-2)");
+    assert!(actual.err.contains("negative number"));
 }

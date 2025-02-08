@@ -1,19 +1,14 @@
 use crate::{
     run_pager,
-    util::{create_lscolors, create_map, map_into_value},
-    PagerConfig, StyleConfig,
+    util::{create_lscolors, create_map},
+    PagerConfig,
 };
 use nu_ansi_term::{Color, Style};
 use nu_color_config::{get_color_map, StyleComputer};
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
-use std::collections::HashMap;
+use nu_engine::command_prelude::*;
+use nu_protocol::Config;
 
-/// A `less` like program to render a [Value] as a table.
+/// A `less` like program to render a [`Value`] as a table.
 #[derive(Clone)]
 pub struct Explore;
 
@@ -22,7 +17,7 @@ impl Command for Explore {
         "explore"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Explore acts as a table pager, just like `less` does for text."
     }
 
@@ -40,9 +35,9 @@ impl Command for Explore {
             )
             .switch("index", "Show row indexes when viewing a list", Some('i'))
             .switch(
-                "reverse",
+                "tail",
                 "Start with the viewport scrolled to the bottom",
-                Some('r'),
+                Some('t'),
             )
             .switch(
                 "peek",
@@ -52,7 +47,7 @@ impl Command for Explore {
             .category(Category::Viewers)
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"Press `:` then `h` to get a help menu."#
     }
 
@@ -65,45 +60,62 @@ impl Command for Explore {
     ) -> Result<PipelineData, ShellError> {
         let show_head: bool = call.get_flag(engine_state, stack, "head")?.unwrap_or(true);
         let show_index: bool = call.has_flag(engine_state, stack, "index")?;
-        let is_reverse: bool = call.has_flag(engine_state, stack, "reverse")?;
+        let tail: bool = call.has_flag(engine_state, stack, "tail")?;
         let peek_value: bool = call.has_flag(engine_state, stack, "peek")?;
 
-        let ctrlc = engine_state.ctrlc.clone();
-        let nu_config = engine_state.get_config();
+        let nu_config = stack.get_config(engine_state);
         let style_computer = StyleComputer::from_config(engine_state, stack);
 
-        let mut config = nu_config.explore.clone();
-        include_nu_config(&mut config, &style_computer);
-        update_config(&mut config, show_index, show_head);
-        prepare_default_config(&mut config);
-
-        let style = style_from_config(&config);
+        let mut explore_config = ExploreConfig::from_nu_config(&nu_config);
+        explore_config.table.show_header = show_head;
+        explore_config.table.show_index = show_index;
+        explore_config.table.separator_style = lookup_color(&style_computer, "separator");
 
         let lscolors = create_lscolors(engine_state, stack);
+        let cwd = engine_state.cwd(Some(stack)).map_or(String::new(), |path| {
+            path.to_str().unwrap_or("").to_string()
+        });
 
-        let mut config = PagerConfig::new(nu_config, &style_computer, &lscolors, config);
-        config.style = style;
-        config.reverse = is_reverse;
-        config.peek_value = peek_value;
-        config.reverse = is_reverse;
+        let config = PagerConfig::new(
+            &nu_config,
+            &explore_config,
+            &style_computer,
+            &lscolors,
+            peek_value,
+            tail,
+            &cwd,
+        );
 
-        let result = run_pager(engine_state, &mut stack.clone(), ctrlc, input, config);
+        let result = run_pager(engine_state, &mut stack.clone(), input, config);
 
         match result {
             Ok(Some(value)) => Ok(PipelineData::Value(value, None)),
             Ok(None) => Ok(PipelineData::Value(Value::default(), None)),
-            Err(err) => Ok(PipelineData::Value(
-                Value::error(err.into(), call.head),
-                None,
-            )),
+            Err(err) => {
+                let shell_error = match err.downcast::<ShellError>() {
+                    Ok(e) => e,
+                    Err(e) => ShellError::GenericError {
+                        error: e.to_string(),
+                        msg: "".into(),
+                        span: None,
+                        help: None,
+                        inner: vec![],
+                    },
+                };
+
+                Ok(PipelineData::Value(
+                    Value::error(shell_error, call.head),
+                    None,
+                ))
+            }
         }
     }
 
     fn examples(&self) -> Vec<Example> {
         vec![
             Example {
-                description: "Explore the system information record",
-                example: r#"sys | explore"#,
+                description: "Explore the system host information record",
+                example: r#"sys host | explore"#,
                 result: None,
             },
             Example {
@@ -126,130 +138,118 @@ impl Command for Explore {
     }
 }
 
-fn update_config(config: &mut HashMap<String, Value>, show_index: bool, show_head: bool) {
-    let mut hm = config.get("table").and_then(create_map).unwrap_or_default();
-    if show_index {
-        insert_bool(&mut hm, "show_index", show_index);
-    }
-
-    if show_head {
-        insert_bool(&mut hm, "show_head", show_head);
-    }
-
-    config.insert(String::from("table"), map_into_value(hm));
+#[derive(Debug, Clone)]
+pub struct ExploreConfig {
+    pub table: TableConfig,
+    pub selected_cell: Style,
+    pub status_info: Style,
+    pub status_success: Style,
+    pub status_warn: Style,
+    pub status_error: Style,
+    pub status_bar_background: Style,
+    pub status_bar_text: Style,
+    pub cmd_bar_text: Style,
+    pub cmd_bar_background: Style,
+    pub highlight: Style,
+    /// if true, the explore view will immediately try to run the command as it is typed
+    pub try_reactive: bool,
 }
 
-fn style_from_config(config: &HashMap<String, Value>) -> StyleConfig {
-    let mut style = StyleConfig::default();
-
-    let colors = get_color_map(config);
-
-    if let Some(s) = colors.get("status_bar_text") {
-        style.status_bar_text = *s;
-    }
-
-    if let Some(s) = colors.get("status_bar_background") {
-        style.status_bar_background = *s;
-    }
-
-    if let Some(s) = colors.get("command_bar_text") {
-        style.cmd_bar_text = *s;
-    }
-
-    if let Some(s) = colors.get("command_bar_background") {
-        style.cmd_bar_background = *s;
-    }
-
-    if let Some(hm) = config.get("status").and_then(create_map) {
-        let colors = get_color_map(&hm);
-
-        if let Some(s) = colors.get("info") {
-            style.status_info = *s;
-        }
-
-        if let Some(s) = colors.get("success") {
-            style.status_success = *s;
-        }
-
-        if let Some(s) = colors.get("warn") {
-            style.status_warn = *s;
-        }
-
-        if let Some(s) = colors.get("error") {
-            style.status_error = *s;
+impl Default for ExploreConfig {
+    fn default() -> Self {
+        Self {
+            table: TableConfig::default(),
+            selected_cell: color(None, Some(Color::LightBlue)),
+            status_info: color(None, None),
+            status_success: color(Some(Color::Black), Some(Color::Green)),
+            status_warn: color(None, None),
+            status_error: color(Some(Color::White), Some(Color::Red)),
+            status_bar_background: color(
+                Some(Color::Rgb(29, 31, 33)),
+                Some(Color::Rgb(196, 201, 198)),
+            ),
+            status_bar_text: color(None, None),
+            cmd_bar_text: color(Some(Color::Rgb(196, 201, 198)), None),
+            cmd_bar_background: color(None, None),
+            highlight: color(Some(Color::Black), Some(Color::Yellow)),
+            try_reactive: false,
         }
     }
-
-    style
 }
+impl ExploreConfig {
+    /// take the default explore config and update it with relevant values from the nu config
+    pub fn from_nu_config(config: &Config) -> Self {
+        let mut ret = Self::default();
 
-fn prepare_default_config(config: &mut HashMap<String, Value>) {
-    const STATUS_BAR: Style = color(
-        Some(Color::Rgb(29, 31, 33)),
-        Some(Color::Rgb(196, 201, 198)),
-    );
+        ret.table.column_padding_left = config.table.padding.left;
+        ret.table.column_padding_right = config.table.padding.right;
 
-    const INPUT_BAR: Style = color(Some(Color::Rgb(196, 201, 198)), None);
+        let explore_cfg_hash_map = config.explore.clone();
+        let colors = get_color_map(&explore_cfg_hash_map);
 
-    const HIGHLIGHT: Style = color(Some(Color::Black), Some(Color::Yellow));
+        if let Some(s) = colors.get("status_bar_text") {
+            ret.status_bar_text = *s;
+        }
 
-    const STATUS_ERROR: Style = color(Some(Color::White), Some(Color::Red));
+        if let Some(s) = colors.get("status_bar_background") {
+            ret.status_bar_background = *s;
+        }
 
-    const STATUS_INFO: Style = color(None, None);
+        if let Some(s) = colors.get("command_bar_text") {
+            ret.cmd_bar_text = *s;
+        }
 
-    const STATUS_SUCCESS: Style = color(Some(Color::Black), Some(Color::Green));
+        if let Some(s) = colors.get("command_bar_background") {
+            ret.cmd_bar_background = *s;
+        }
 
-    const STATUS_WARN: Style = color(None, None);
+        if let Some(s) = colors.get("command_bar_background") {
+            ret.cmd_bar_background = *s;
+        }
 
-    const TABLE_SPLIT_LINE: Style = color(Some(Color::Rgb(64, 64, 64)), None);
+        if let Some(s) = colors.get("selected_cell") {
+            ret.selected_cell = *s;
+        }
 
-    const TABLE_SELECT_CELL: Style = color(None, None);
+        if let Some(hm) = explore_cfg_hash_map.get("status").and_then(create_map) {
+            let colors = get_color_map(&hm);
 
-    const TABLE_SELECT_ROW: Style = color(None, None);
+            if let Some(s) = colors.get("info") {
+                ret.status_info = *s;
+            }
 
-    const TABLE_SELECT_COLUMN: Style = color(None, None);
+            if let Some(s) = colors.get("success") {
+                ret.status_success = *s;
+            }
 
-    insert_style(config, "status_bar_background", STATUS_BAR);
-    insert_style(config, "command_bar_text", INPUT_BAR);
-    insert_style(config, "highlight", HIGHLIGHT);
+            if let Some(s) = colors.get("warn") {
+                ret.status_warn = *s;
+            }
 
-    // because how config works we need to parse a string into Value::Record
+            if let Some(s) = colors.get("error") {
+                ret.status_error = *s;
+            }
+        }
 
-    {
-        let mut hm = config
-            .get("status")
-            .and_then(parse_hash_map)
-            .unwrap_or_default();
+        if let Some(hm) = explore_cfg_hash_map.get("try").and_then(create_map) {
+            if let Some(reactive) = hm.get("reactive") {
+                if let Ok(b) = reactive.as_bool() {
+                    ret.try_reactive = b;
+                }
+            }
+        }
 
-        insert_style(&mut hm, "info", STATUS_INFO);
-        insert_style(&mut hm, "success", STATUS_SUCCESS);
-        insert_style(&mut hm, "warn", STATUS_WARN);
-        insert_style(&mut hm, "error", STATUS_ERROR);
-
-        config.insert(String::from("status"), map_into_value(hm));
-    }
-
-    {
-        let mut hm = config
-            .get("table")
-            .and_then(parse_hash_map)
-            .unwrap_or_default();
-
-        insert_style(&mut hm, "split_line", TABLE_SPLIT_LINE);
-        insert_style(&mut hm, "selected_cell", TABLE_SELECT_CELL);
-        insert_style(&mut hm, "selected_row", TABLE_SELECT_ROW);
-        insert_style(&mut hm, "selected_column", TABLE_SELECT_COLUMN);
-
-        config.insert(String::from("table"), map_into_value(hm));
+        ret
     }
 }
 
-fn parse_hash_map(value: &Value) -> Option<HashMap<String, Value>> {
-    value.as_record().ok().map(|val| {
-        val.iter()
-            .map(|(col, val)| (col.clone(), val.clone()))
-            .collect::<HashMap<_, _>>()
-    })
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TableConfig {
+    pub separator_style: Style,
+    pub show_index: bool,
+    pub show_header: bool,
+    pub column_padding_left: usize,
+    pub column_padding_right: usize,
 }
 
 const fn color(foreground: Option<Color>, background: Option<Color>) -> Style {
@@ -265,41 +265,6 @@ const fn color(foreground: Option<Color>, background: Option<Color>) -> Style {
         is_strikethrough: false,
         is_underline: false,
         prefix_with_reset: false,
-    }
-}
-
-fn insert_style(map: &mut HashMap<String, Value>, key: &str, value: Style) {
-    if map.contains_key(key) {
-        return;
-    }
-
-    if value == Style::default() {
-        return;
-    }
-
-    let value = nu_color_config::NuStyle::from(value);
-    if let Ok(val) = nu_json::to_string_raw(&value) {
-        map.insert(String::from(key), Value::string(val, Span::unknown()));
-    }
-}
-
-fn insert_bool(map: &mut HashMap<String, Value>, key: &str, value: bool) {
-    if map.contains_key(key) {
-        return;
-    }
-
-    map.insert(String::from(key), Value::bool(value, Span::unknown()));
-}
-
-fn include_nu_config(config: &mut HashMap<String, Value>, style_computer: &StyleComputer) {
-    let line_color = lookup_color(style_computer, "separator");
-    if line_color != nu_ansi_term::Style::default() {
-        let mut map = config
-            .get("table")
-            .and_then(parse_hash_map)
-            .unwrap_or_default();
-        insert_style(&mut map, "split_line", line_color);
-        config.insert(String::from("table"), map_into_value(map));
     }
 }
 

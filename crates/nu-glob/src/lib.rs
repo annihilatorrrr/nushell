@@ -73,6 +73,7 @@ extern crate doc_comment;
 doctest!("../README.md");
 
 use std::cmp;
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -293,7 +294,6 @@ pub fn glob_with(pattern: &str, options: MatchOptions) -> Result<Paths, PatternE
 /// This is provided primarily for testability, so multithreaded test runners can
 /// test pattern matches in different test directories at the same time without
 /// having to append the parent to the pattern under test.
-
 pub fn glob_with_parent(
     pattern: &str,
     options: MatchOptions,
@@ -310,6 +310,27 @@ pub fn glob_with_parent(
         }
         Err(e) => Err(e),
     }
+}
+
+const GLOB_CHARS: &[char] = &['*', '?', '['];
+
+/// Returns true if the given pattern is a glob, false if it's merely text to be
+/// matched exactly.
+///
+/// ```rust
+/// assert!(nu_glob::is_glob("foo/*"));
+/// assert!(nu_glob::is_glob("foo/**/bar"));
+/// assert!(nu_glob::is_glob("foo?"));
+/// assert!(nu_glob::is_glob("foo[A]"));
+///
+/// assert!(!nu_glob::is_glob("foo"));
+/// // nu_glob will ignore an unmatched ']'
+/// assert!(!nu_glob::is_glob("foo]"));
+/// // nu_glob doesn't expand {}
+/// assert!(!nu_glob::is_glob("foo.{txt,png}"));
+/// ```
+pub fn is_glob(pattern: &str) -> bool {
+    pattern.contains(GLOB_CHARS)
 }
 
 /// A glob iteration error.
@@ -346,7 +367,6 @@ impl Error for GlobError {
         self.error.description()
     }
 
-    #[allow(unknown_lints, bare_trait_objects)]
     fn cause(&self) -> Option<&dyn Error> {
         Some(&self.error)
     }
@@ -505,7 +525,6 @@ impl Iterator for Paths {
 
 /// A pattern parsing error.
 #[derive(Debug)]
-#[allow(missing_copy_implementations)]
 pub struct PatternError {
     /// The approximate character index of where the error occurred.
     pub pos: usize,
@@ -630,53 +649,58 @@ impl Pattern {
 
                     let count = i - old;
 
-                    #[allow(clippy::comparison_chain)]
-                    if count > 2 {
-                        return Err(PatternError {
-                            pos: old + 2,
-                            msg: ERROR_WILDCARDS,
-                        });
-                    } else if count == 2 {
-                        // ** can only be an entire path component
-                        // i.e. a/**/b is valid, but a**/b or a/**b is not
-                        // invalid matches are treated literally
-                        let is_valid = if i == 2 || path::is_separator(chars[i - count - 1]) {
-                            // it ends in a '/'
-                            if i < chars.len() && path::is_separator(chars[i]) {
-                                i += 1;
-                                true
-                            // or the pattern ends here
-                            // this enables the existing globbing mechanism
-                            } else if i == chars.len() {
-                                true
-                            // `**` ends in non-separator
+                    match count.cmp(&2) {
+                        Ordering::Greater => {
+                            return Err(PatternError {
+                                pos: old + 2,
+                                msg: ERROR_WILDCARDS,
+                            });
+                        }
+                        Ordering::Equal => {
+                            // ** can only be an entire path component
+                            // i.e. a/**/b is valid, but a**/b or a/**b is not
+                            // invalid matches are treated literally
+                            let is_valid = if i == 2 || path::is_separator(chars[i - count - 1]) {
+                                // it ends in a '/'
+                                if i < chars.len() && path::is_separator(chars[i]) {
+                                    i += 1;
+                                    true
+                                // or the pattern ends here
+                                // this enables the existing globbing mechanism
+                                } else if i == chars.len() {
+                                    true
+                                // `**` ends in non-separator
+                                } else {
+                                    return Err(PatternError {
+                                        pos: i,
+                                        msg: ERROR_RECURSIVE_WILDCARDS,
+                                    });
+                                }
+                            // `**` begins with non-separator
                             } else {
                                 return Err(PatternError {
-                                    pos: i,
+                                    pos: old - 1,
                                     msg: ERROR_RECURSIVE_WILDCARDS,
                                 });
-                            }
-                        // `**` begins with non-separator
-                        } else {
-                            return Err(PatternError {
-                                pos: old - 1,
-                                msg: ERROR_RECURSIVE_WILDCARDS,
-                            });
-                        };
+                            };
 
-                        if is_valid {
-                            // collapse consecutive AnyRecursiveSequence to a
-                            // single one
+                            if is_valid {
+                                // collapse consecutive AnyRecursiveSequence to a
+                                // single one
 
-                            let tokens_len = tokens.len();
+                                let tokens_len = tokens.len();
 
-                            if !(tokens_len > 1 && tokens[tokens_len - 1] == AnyRecursiveSequence) {
-                                is_recursive = true;
-                                tokens.push(AnyRecursiveSequence);
+                                if !(tokens_len > 1
+                                    && tokens[tokens_len - 1] == AnyRecursiveSequence)
+                                {
+                                    is_recursive = true;
+                                    tokens.push(AnyRecursiveSequence);
+                                }
                             }
                         }
-                    } else {
-                        tokens.push(AnySequence);
+                        Ordering::Less => {
+                            tokens.push(AnySequence);
+                        }
                     }
                 }
                 '[' => {
@@ -765,7 +789,7 @@ impl Pattern {
     /// `Pattern` using the default match options (i.e. `MatchOptions::default()`).
     pub fn matches_path(&self, path: &Path) -> bool {
         // FIXME (#9639): This needs to handle non-utf8 paths
-        path.to_str().map_or(false, |s| self.matches(s))
+        path.to_str().is_some_and(|s| self.matches(s))
     }
 
     /// Return if the given `str` matches this `Pattern` using the specified
@@ -778,8 +802,7 @@ impl Pattern {
     /// `Pattern` using the specified match options.
     pub fn matches_path_with(&self, path: &Path, options: MatchOptions) -> bool {
         // FIXME (#9639): This needs to handle non-utf8 paths
-        path.to_str()
-            .map_or(false, |s| self.matches_with(s, options))
+        path.to_str().is_some_and(|s| self.matches_with(s, options))
     }
 
     /// Access the original glob pattern.
@@ -1044,14 +1067,13 @@ fn chars_eq(a: char, b: char, case_sensitive: bool) -> bool {
         true
     } else if !case_sensitive && a.is_ascii() && b.is_ascii() {
         // FIXME: work with non-ascii chars properly (issue #9084)
-        a.to_ascii_lowercase() == b.to_ascii_lowercase()
+        a.eq_ignore_ascii_case(&b)
     } else {
         a == b
     }
 }
 
 /// Configuration options to modify the behaviour of `Pattern::matches_with(..)`.
-#[allow(missing_copy_implementations)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MatchOptions {
     /// Whether or not patterns should be matched in a case-sensitive manner.
@@ -1141,18 +1163,28 @@ mod test {
         use std::io;
         let mut iter = glob("/root/*").unwrap();
 
-        // Skip test if running with permissions to read /root
-        if std::fs::read_dir("/root/").is_err() {
-            // GlobErrors shouldn't halt iteration
-            let next = iter.next();
-            assert!(next.is_some());
+        match std::fs::read_dir("/root/") {
+            // skip if running with permissions to read /root
+            Ok(_) => {}
 
-            let err = next.unwrap();
-            assert!(err.is_err());
+            // skip if /root doesn't exist
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                assert!(iter.count() == 0);
+            }
 
-            let err = err.err().unwrap();
-            assert!(err.path() == Path::new("/root"));
-            assert!(err.error().kind() == io::ErrorKind::PermissionDenied);
+            // should otherwise return a single match with permission error
+            Err(_) => {
+                // GlobErrors shouldn't halt iteration
+                let next = iter.next();
+                assert!(next.is_some());
+
+                let err = next.unwrap();
+                assert!(err.is_err());
+
+                let err = err.err().unwrap();
+                assert!(err.path() == Path::new("/root"));
+                assert!(err.error().kind() == io::ErrorKind::PermissionDenied);
+            }
         }
     }
 

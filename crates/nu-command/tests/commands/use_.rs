@@ -1,4 +1,3 @@
-use nu_test_support::fs::AbsolutePath;
 use nu_test_support::fs::Stub::{FileWithContent, FileWithContentToBeTrimmed};
 use nu_test_support::nu;
 use nu_test_support::pipeline;
@@ -7,10 +6,10 @@ use nu_test_support::playground::Playground;
 #[test]
 fn use_module_file_within_block() {
     Playground::setup("use_test_1", |dirs, nu| {
-        let file = AbsolutePath::new(dirs.test().join("spam.nu"));
+        let file = dirs.test().join("spam.nu");
 
-        nu.with_files(vec![FileWithContent(
-            &file.to_string(),
+        nu.with_files(&[FileWithContent(
+            file.as_os_str().to_str().unwrap(),
             r#"
                 export def foo [] {
                     echo "hello world"
@@ -37,10 +36,10 @@ fn use_module_file_within_block() {
 #[test]
 fn use_keeps_doc_comments() {
     Playground::setup("use_doc_comments", |dirs, nu| {
-        let file = AbsolutePath::new(dirs.test().join("spam.nu"));
+        let file = dirs.test().join("spam.nu");
 
-        nu.with_files(vec![FileWithContent(
-            &file.to_string(),
+        nu.with_files(&[FileWithContent(
+            file.as_os_str().to_str().unwrap(),
             r#"
                 # this is my foo command
                 export def foo [
@@ -68,7 +67,7 @@ fn use_keeps_doc_comments() {
 #[test]
 fn use_eval_export_env() {
     Playground::setup("use_eval_export_env", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             r#"
                 export-env { $env.FOO = 'foo' }
@@ -86,7 +85,7 @@ fn use_eval_export_env() {
 #[test]
 fn use_eval_export_env_hide() {
     Playground::setup("use_eval_export_env", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             r#"
                 export-env { hide-env FOO }
@@ -106,7 +105,7 @@ fn use_do_cd() {
     Playground::setup("use_do_cd", |dirs, sandbox| {
         sandbox
             .mkdir("test1/test2")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "test1/test2/spam.nu",
                 r#"
                     export-env { cd test1/test2 }
@@ -126,7 +125,7 @@ fn use_do_cd_file_relative() {
     Playground::setup("use_do_cd_file_relative", |dirs, sandbox| {
         sandbox
             .mkdir("test1/test2")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "test1/test2/spam.nu",
                 r#"
                     export-env { cd ($env.FILE_PWD | path join '..') }
@@ -146,7 +145,7 @@ fn use_dont_cd_overlay() {
     Playground::setup("use_dont_cd_overlay", |dirs, sandbox| {
         sandbox
             .mkdir("test1/test2")
-            .with_files(vec![FileWithContentToBeTrimmed(
+            .with_files(&[FileWithContentToBeTrimmed(
                 "test1/test2/spam.nu",
                 r#"
                     export-env {
@@ -168,7 +167,7 @@ fn use_dont_cd_overlay() {
 #[test]
 fn use_export_env_combined() {
     Playground::setup("use_is_scoped", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "spam.nu",
             r#"
                 def foo [] { 'foo' }
@@ -189,9 +188,7 @@ fn use_module_creates_accurate_did_you_mean_1() {
     let actual = nu!(r#"
             module spam { export def foo [] { "foo" } }; use spam; foo
         "#);
-    assert!(actual.err.contains(
-        "command 'foo' was not found but it was imported from module 'spam'; try using `spam foo`"
-    ));
+    assert!(actual.err.contains("Did you mean `spam foo`"));
 }
 
 #[test]
@@ -199,9 +196,9 @@ fn use_module_creates_accurate_did_you_mean_2() {
     let actual = nu!(r#"
             module spam { export def foo [] { "foo" } }; foo
         "#);
-    assert!(actual.err.contains(
-        "command 'foo' was not found but it exists in module 'spam'; try importing it with `use`"
-    ));
+    assert!(actual
+        .err
+        .contains("A command with that name exists in module `spam`"));
 }
 
 #[test]
@@ -287,9 +284,9 @@ fn use_main_def_known_external() {
 #[test]
 fn use_main_not_exported() {
     let inp = &[
-        r#"module spam { def main [] { "spam" } }"#,
-        r#"use spam"#,
-        r#"spam"#,
+        r#"module my-super-cool-and-unique-module-name { def main [] { "hi" } }"#,
+        r#"use my-super-cool-and-unique-module-name"#,
+        r#"my-super-cool-and-unique-module-name"#,
     ];
 
     let actual = nu!(&inp.join("; "));
@@ -310,4 +307,48 @@ fn can_use_sub_subname_from_submodule() {
         r#"module spam { export module foo { export def bar [] {"bar"} } }; use spam foo bar; bar"#;
     let actual = nu!(inp);
     assert_eq!(actual.out, "bar")
+}
+
+#[test]
+fn test_use_with_printing_file_pwd() {
+    Playground::setup("use_with_printing_file_pwd", |dirs, nu| {
+        let file = dirs.test().join("mod.nu");
+        nu.with_files(&[FileWithContent(
+            file.as_os_str().to_str().unwrap(),
+            r#"
+                export-env {
+                    print $env.FILE_PWD
+                }
+            "#,
+        )]);
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            "use ."
+        );
+
+        assert_eq!(actual.out, dirs.test().to_string_lossy());
+    });
+}
+
+#[test]
+fn test_use_with_printing_current_file() {
+    Playground::setup("use_with_printing_current_file", |dirs, nu| {
+        let file = dirs.test().join("mod.nu");
+        nu.with_files(&[FileWithContent(
+            file.as_os_str().to_str().unwrap(),
+            r#"
+                export-env {
+                    print $env.CURRENT_FILE
+                }
+            "#,
+        )]);
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            "use ."
+        );
+
+        assert_eq!(actual.out, dirs.test().join("mod.nu").to_string_lossy());
+    });
 }

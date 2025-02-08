@@ -1,11 +1,5 @@
 pub use super::uniq;
-use nu_engine::column::nonexistent_column;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-};
+use nu_engine::{column::nonexistent_column, command_prelude::*};
 
 #[derive(Clone)]
 pub struct UniqBy;
@@ -18,7 +12,7 @@ impl Command for UniqBy {
     fn signature(&self) -> Signature {
         Signature::build("uniq-by")
             .input_output_types(vec![
-                (Type::Table(vec![]), Type::Table(vec![])),
+                (Type::table(), Type::table()),
                 (
                     Type::List(Box::new(Type::Any)),
                     Type::List(Box::new(Type::Any)),
@@ -49,7 +43,7 @@ impl Command for UniqBy {
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Return the distinct values in the input by the given column(s)."
     }
 
@@ -116,7 +110,6 @@ fn validate(vec: &[Value], columns: &[String], span: Span) -> Result<(), ShellEr
         let val_span = v.span();
         if let Value::Record { val: record, .. } = &v {
             if columns.is_empty() {
-                // This uses the same format as the 'requires a column name' error in split_by.rs
                 return Err(ShellError::GenericError {
                     error: "expected name".into(),
                     msg: "requires a column name to filter table data".into(),
@@ -129,7 +122,7 @@ fn validate(vec: &[Value], columns: &[String], span: Span) -> Result<(), ShellEr
             if let Some(nonexistent) = nonexistent_column(columns, record.columns()) {
                 return Err(ShellError::CantFindColumn {
                     col_name: nonexistent,
-                    span,
+                    span: Some(span),
                     src_span: val_span,
                 });
             }

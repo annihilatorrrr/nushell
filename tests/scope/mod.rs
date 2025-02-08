@@ -91,6 +91,8 @@ fn correctly_report_of_shadowed_alias() {
 fn correct_scope_modules_fields() {
     let module_setup = r#"
         # nice spam
+        #
+        # and some extra description for spam
 
         export module eggs {
             export module bacon {
@@ -107,7 +109,7 @@ fn correct_scope_modules_fields() {
     "#;
 
     Playground::setup("correct_scope_modules_fields", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContent("spam.nu", module_setup)]);
+        sandbox.with_files(&[FileWithContent("spam.nu", module_setup)]);
 
         let inp = &[
             "use spam.nu",
@@ -118,17 +120,24 @@ fn correct_scope_modules_fields() {
 
         let inp = &[
             "use spam.nu",
-            "scope modules | where name == spam | get 0.usage",
+            "scope modules | where name == spam | get 0.description",
         ];
         let actual = nu!(cwd: dirs.test(), &inp.join("; "));
         assert_eq!(actual.out, "nice spam");
 
         let inp = &[
             "use spam.nu",
-            "scope modules | where name == spam | get 0.env_block | is-empty",
+            "scope modules | where name == spam | get 0.extra_description",
         ];
         let actual = nu!(cwd: dirs.test(), &inp.join("; "));
-        assert_eq!(actual.out, "false");
+        assert_eq!(actual.out, "and some extra description for spam");
+
+        let inp = &[
+            "use spam.nu",
+            "scope modules | where name == spam | get 0.has_env_block",
+        ];
+        let actual = nu!(cwd: dirs.test(), &inp.join("; "));
+        assert_eq!(actual.out, "true");
 
         let inp = &[
             "use spam.nu",
@@ -182,7 +191,7 @@ fn correct_scope_aliases_fields() {
     "#;
 
     Playground::setup("correct_scope_aliases_fields", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContent("spam.nu", module_setup)]);
+        sandbox.with_files(&[FileWithContent("spam.nu", module_setup)]);
 
         let inp = &[
             "use spam.nu",
@@ -200,7 +209,7 @@ fn correct_scope_aliases_fields() {
 
         let inp = &[
             "use spam.nu",
-            "scope aliases | where name == 'spam xaz' | get 0.usage",
+            "scope aliases | where name == 'spam xaz' | get 0.description",
         ];
         let actual = nu!(cwd: dirs.test(), &inp.join("; "));
         assert_eq!(actual.out, "nice alias");
@@ -239,7 +248,7 @@ fn correct_scope_externs_fields() {
     "#;
 
     Playground::setup("correct_scope_aliases_fields", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContent("spam.nu", module_setup)]);
+        sandbox.with_files(&[FileWithContent("spam.nu", module_setup)]);
 
         let inp = &[
             "use spam.nu",
@@ -250,14 +259,14 @@ fn correct_scope_externs_fields() {
 
         let inp = &[
             "use spam.nu",
-            "scope externs | where name == 'spam git' | get 0.usage",
+            "scope externs | where name == 'spam git' | get 0.description",
         ];
         let actual = nu!(cwd: dirs.test(), &inp.join("; "));
         assert_eq!(actual.out, "nice extern");
 
         let inp = &[
             "use spam.nu",
-            "scope externs | where name == 'spam git' | get 0.usage | str contains (char nl)",
+            "scope externs | where name == 'spam git' | get 0.description | str contains (char nl)",
         ];
         let actual = nu!(cwd: dirs.test(), &inp.join("; "));
         assert_eq!(actual.out, "false");

@@ -1,6 +1,4 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, PipelineData, ShellError, Signature, SyntaxShape, Type};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct LetEnv;
@@ -23,7 +21,7 @@ impl Command for LetEnv {
             .category(Category::Removed)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "`let-env FOO = ...` has been removed, use `$env.FOO = ...` instead."
     }
 

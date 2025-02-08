@@ -1,23 +1,28 @@
+mod base;
 mod char_;
 mod detect_columns;
 mod encode_decode;
 mod format;
+mod guess_width;
 mod parse;
 mod split;
 mod str_;
 
+pub use base::{
+    DecodeBase32, DecodeBase32Hex, DecodeBase64, DecodeHex, EncodeBase32, EncodeBase32Hex,
+    EncodeBase64, EncodeHex,
+};
 pub use char_::Char;
 pub use detect_columns::*;
 pub use encode_decode::*;
 pub use format::*;
-use nu_engine::CallExt;
 pub use parse::*;
 pub use split::*;
 pub use str_::*;
 
+use nu_engine::CallExt;
 use nu_protocol::{
-    ast::Call,
-    engine::{EngineState, Stack, StateWorkingSet},
+    engine::{Call, EngineState, Stack, StateWorkingSet},
     ShellError,
 };
 

@@ -1,29 +1,64 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
-use nu_protocol::ast::{Call, Expr};
-use nu_protocol::engine::{EngineState, Stack, StateWorkingSet, PWD_ENV};
-use nu_protocol::{Config, PipelineData, ShellError, Span, Value, VarId};
-
+use crate::ClosureEvalOnce;
 use nu_path::canonicalize_with;
+use nu_protocol::{
+    ast::Expr,
+    engine::{Call, EngineState, Stack, StateWorkingSet},
+    shell_error::io::IoError,
+    ShellError, Span, Type, Value, VarId,
+};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use crate::eval_block;
+pub const ENV_CONVERSIONS: &str = "ENV_CONVERSIONS";
 
-#[cfg(windows)]
-const ENV_PATH_NAME: &str = "Path";
-#[cfg(windows)]
-const ENV_PATH_NAME_SECONDARY: &str = "PATH";
-#[cfg(not(windows))]
-const ENV_PATH_NAME: &str = "PATH";
+enum ConversionError {
+    ShellError(ShellError),
+    CellPathError,
+}
 
-const ENV_CONVERSIONS: &str = "ENV_CONVERSIONS";
+impl From<ShellError> for ConversionError {
+    fn from(value: ShellError) -> Self {
+        Self::ShellError(value)
+    }
+}
 
-#[allow(dead_code)]
-enum ConversionResult {
-    Ok(Value),
-    ConversionError(ShellError), // Failure during the conversion itself
-    GeneralError(ShellError),    // Other error not directly connected to running the conversion
-    CellPathError, // Error looking up the ENV_VAR.to_/from_string fields in $env.ENV_CONVERSIONS
+/// Translate environment variables from Strings to Values.
+pub fn convert_env_vars(
+    stack: &mut Stack,
+    engine_state: &EngineState,
+    conversions: &Value,
+) -> Result<(), ShellError> {
+    let conversions = conversions.as_record()?;
+    for (key, conversion) in conversions.into_iter() {
+        if let Some((case_preserve_env_name, val)) =
+            stack.get_env_var_insensitive(engine_state, key)
+        {
+            match val.get_type() {
+                Type::String => {}
+                _ => continue,
+            }
+
+            let conversion = conversion
+                .as_record()?
+                .get("from_string")
+                .ok_or(ShellError::MissingRequiredColumn {
+                    column: "from_string",
+                    span: conversion.span(),
+                })?
+                .as_closure()?;
+
+            let new_val = ClosureEvalOnce::new(engine_state, stack, conversion.clone())
+                .debug(false)
+                .run_with_value(val.clone())?
+                .into_value(val.span())?;
+
+            stack.add_env_var(case_preserve_env_name.to_string(), new_val);
+        }
+    }
+    Ok(())
 }
 
 /// Translate environment variables from Strings to Values. Requires config to be already set up in
@@ -32,7 +67,10 @@ enum ConversionResult {
 /// It returns Option instead of Result since we do want to translate all the values we can and
 /// skip errors. This function is called in the main() so we want to keep running, we cannot just
 /// exit.
-pub fn convert_env_values(engine_state: &mut EngineState, stack: &Stack) -> Option<ShellError> {
+pub fn convert_env_values(
+    engine_state: &mut EngineState,
+    stack: &mut Stack,
+) -> Result<(), ShellError> {
     let mut error = None;
 
     let mut new_scope = HashMap::new();
@@ -40,37 +78,28 @@ pub fn convert_env_values(engine_state: &mut EngineState, stack: &Stack) -> Opti
     let env_vars = engine_state.render_env_vars();
 
     for (name, val) in env_vars {
-        match get_converted_value(engine_state, stack, name, val, "from_string") {
-            ConversionResult::Ok(v) => {
-                let _ = new_scope.insert(name.to_string(), v);
+        if let Value::String { .. } = val {
+            // Only run from_string on string values
+            match get_converted_value(engine_state, stack, name, val, "from_string") {
+                Ok(v) => {
+                    let _ = new_scope.insert(name.to_string(), v);
+                }
+                Err(ConversionError::ShellError(e)) => error = error.or(Some(e)),
+                Err(ConversionError::CellPathError) => {
+                    let _ = new_scope.insert(name.to_string(), val.clone());
+                }
             }
-            ConversionResult::ConversionError(e) => error = error.or(Some(e)),
-            ConversionResult::GeneralError(_) => continue,
-            ConversionResult::CellPathError => {
-                let _ = new_scope.insert(name.to_string(), val.clone());
-            }
+        } else {
+            // Skip values that are already converted (not a string)
+            let _ = new_scope.insert(name.to_string(), val.clone());
         }
     }
 
-    #[cfg(not(windows))]
-    {
-        error = error.or_else(|| ensure_path(&mut new_scope, ENV_PATH_NAME));
-    }
-
-    #[cfg(windows)]
-    {
-        let first_result = ensure_path(&mut new_scope, ENV_PATH_NAME);
-        if first_result.is_some() {
-            let second_result = ensure_path(&mut new_scope, ENV_PATH_NAME_SECONDARY);
-
-            if second_result.is_some() {
-                error = error.or(first_result);
-            }
-        }
-    }
+    error = error.or_else(|| ensure_path(engine_state, stack));
 
     if let Ok(last_overlay_name) = &stack.last_overlay_name() {
-        if let Some(env_vars) = engine_state.env_vars.get_mut(last_overlay_name) {
+        if let Some(env_vars) = Arc::make_mut(&mut engine_state.env_vars).get_mut(last_overlay_name)
+        {
             for (k, v) in new_scope {
                 env_vars.insert(k, v);
             }
@@ -85,7 +114,11 @@ pub fn convert_env_values(engine_state: &mut EngineState, stack: &Stack) -> Opti
         });
     }
 
-    error
+    if let Some(err) = error {
+        Err(err)
+    } else {
+        Ok(())
+    }
 }
 
 /// Translate one environment variable from Value to String
@@ -98,28 +131,27 @@ pub fn env_to_string(
     stack: &Stack,
 ) -> Result<String, ShellError> {
     match get_converted_value(engine_state, stack, env_name, value, "to_string") {
-        ConversionResult::Ok(v) => Ok(v.as_string()?),
-        ConversionResult::ConversionError(e) => Err(e),
-        ConversionResult::GeneralError(e) => Err(e),
-        ConversionResult::CellPathError => match value.as_string() {
+        Ok(v) => Ok(v.coerce_into_string()?),
+        Err(ConversionError::ShellError(e)) => Err(e),
+        Err(ConversionError::CellPathError) => match value.coerce_string() {
             Ok(s) => Ok(s),
             Err(_) => {
-                if env_name == ENV_PATH_NAME {
+                if env_name.to_lowercase() == "path" {
                     // Try to convert PATH/Path list to a string
                     match value {
                         Value::List { vals, .. } => {
-                            let paths = vals
+                            let paths: Vec<String> = vals
                                 .iter()
-                                .map(|v| v.as_string())
-                                .collect::<Result<Vec<_>, _>>()?;
+                                .filter_map(|v| v.coerce_str().ok())
+                                .map(|s| nu_path::expand_tilde(&*s).to_string_lossy().into_owned())
+                                .collect();
 
-                            match std::env::join_paths(paths) {
-                                Ok(p) => Ok(p.to_string_lossy().to_string()),
-                                Err(_) => Err(ShellError::EnvVarNotAString {
+                            std::env::join_paths(paths.iter().map(AsRef::<str>::as_ref))
+                                .map(|p| p.to_string_lossy().to_string())
+                                .map_err(|_| ShellError::EnvVarNotAString {
                                     envvar_name: env_name.to_string(),
                                     span: value.span(),
-                                }),
-                            }
+                                })
                         }
                         _ => Err(ShellError::EnvVarNotAString {
                             envvar_name: env_name.to_string(),
@@ -157,127 +189,97 @@ pub fn env_to_strings(
     Ok(env_vars_str)
 }
 
-/// Shorthand for env_to_string() for PWD with custom error
+/// Returns the current working directory as a String, which is guaranteed to be canonicalized.
+/// Unlike `current_dir_str_const()`, this also considers modifications to the current working directory made on the stack.
+///
+/// Returns an error if $env.PWD doesn't exist, is not a String, or is not an absolute path.
+#[deprecated(since = "0.92.3", note = "please use `EngineState::cwd()` instead")]
 pub fn current_dir_str(engine_state: &EngineState, stack: &Stack) -> Result<String, ShellError> {
-    if let Some(pwd) = stack.get_env_var(engine_state, PWD_ENV) {
-        // TODO: PWD should be string by default, we don't need to run ENV_CONVERSIONS on it
-        match env_to_string(PWD_ENV, &pwd, engine_state, stack) {
-            Ok(cwd) => {
-                if Path::new(&cwd).is_absolute() {
-                    Ok(cwd)
-                } else {
-                    Err(ShellError::GenericError {
-                            error: "Invalid current directory".into(),
-                            msg: format!("The 'PWD' environment variable must be set to an absolute path. Found: '{cwd}'"),
-                            span: Some(pwd.span()),
-                            help: None,
-                            inner: vec![]
-                    })
-                }
-            }
-            Err(e) => Err(e),
-        }
-    } else {
-        Err(ShellError::GenericError {
-                error: "Current directory not found".into(),
-                msg: "".into(),
-                span: None,
-                help: Some("The environment variable 'PWD' was not found. It is required to define the current directory.".into()),
-                inner: vec![],
-        })
-    }
+    #[allow(deprecated)]
+    current_dir(engine_state, stack).map(|path| path.to_string_lossy().to_string())
 }
 
-/// Simplified version of current_dir_str() for constant evaluation
+/// Returns the current working directory as a String, which is guaranteed to be canonicalized.
+///
+/// Returns an error if $env.PWD doesn't exist, is not a String, or is not an absolute path.
+#[deprecated(since = "0.92.3", note = "please use `EngineState::cwd()` instead")]
 pub fn current_dir_str_const(working_set: &StateWorkingSet) -> Result<String, ShellError> {
-    if let Some(pwd) = working_set.get_env_var(PWD_ENV) {
-        let span = pwd.span();
-        match pwd {
-            Value::String { val, .. } => {
-                if Path::new(val).is_absolute() {
-                    Ok(val.clone())
-                } else {
-                    Err(ShellError::GenericError {
-                            error: "Invalid current directory".into(),
-                            msg: format!("The 'PWD' environment variable must be set to an absolute path. Found: '{val}'"),
-                            span: Some(span),
-                            help: None,
-                            inner: vec![]
-                    })
-                }
-            }
-            _ => Err(ShellError::GenericError {
-                error: "PWD is not a string".into(),
-                msg: "".into(),
-                span: None,
-                help: Some(
-                    "Cusrrent working directory environment variable 'PWD' must be a string."
-                        .into(),
-                ),
-                inner: vec![],
-            }),
-        }
-    } else {
-        Err(ShellError::GenericError{
-                error: "Current directory not found".into(),
-                msg: "".into(),
-                span: None,
-                help: Some("The environment variable 'PWD' was not found. It is required to define the current directory.".into()),
-                inner: vec![],
-        })
-    }
+    #[allow(deprecated)]
+    current_dir_const(working_set).map(|path| path.to_string_lossy().to_string())
 }
 
-/// Calls current_dir_str() and returns the current directory as a PathBuf
+/// Returns the current working directory, which is guaranteed to be canonicalized.
+/// Unlike `current_dir_const()`, this also considers modifications to the current working directory made on the stack.
+///
+/// Returns an error if $env.PWD doesn't exist, is not a String, or is not an absolute path.
+#[deprecated(since = "0.92.3", note = "please use `EngineState::cwd()` instead")]
 pub fn current_dir(engine_state: &EngineState, stack: &Stack) -> Result<PathBuf, ShellError> {
-    current_dir_str(engine_state, stack).map(PathBuf::from)
+    let cwd = engine_state.cwd(Some(stack))?;
+    // `EngineState::cwd()` always returns absolute path.
+    // We're using `canonicalize_with` instead of `fs::canonicalize()` because
+    // we still need to simplify Windows paths. "." is safe because `cwd` should
+    // be an absolute path already.
+    canonicalize_with(&cwd, ".").map_err(|err| {
+        ShellError::Io(IoError::new_internal_with_path(
+            err.kind(),
+            "Could not canonicalize current dir",
+            nu_protocol::location!(),
+            PathBuf::from(cwd),
+        ))
+    })
 }
 
-/// Version of current_dir() for constant evaluation
+/// Returns the current working directory, which is guaranteed to be canonicalized.
+///
+/// Returns an error if $env.PWD doesn't exist, is not a String, or is not an absolute path.
+#[deprecated(since = "0.92.3", note = "please use `EngineState::cwd()` instead")]
 pub fn current_dir_const(working_set: &StateWorkingSet) -> Result<PathBuf, ShellError> {
-    current_dir_str_const(working_set).map(PathBuf::from)
+    let cwd = working_set.permanent_state.cwd(None)?;
+    // `EngineState::cwd()` always returns absolute path.
+    // We're using `canonicalize_with` instead of `fs::canonicalize()` because
+    // we still need to simplify Windows paths. "." is safe because `cwd` should
+    // be an absolute path already.
+    canonicalize_with(&cwd, ".").map_err(|err| {
+        ShellError::Io(IoError::new_internal_with_path(
+            err.kind(),
+            "Could not canonicalize current dir",
+            nu_protocol::location!(),
+            PathBuf::from(cwd),
+        ))
+    })
 }
 
 /// Get the contents of path environment variable as a list of strings
-///
-/// On non-Windows: It will fetch PATH
-/// On Windows: It will try to fetch Path first but if not present, try PATH
 pub fn path_str(
     engine_state: &EngineState,
     stack: &Stack,
     span: Span,
 ) -> Result<String, ShellError> {
-    let (pathname, pathval) = match stack.get_env_var(engine_state, ENV_PATH_NAME) {
-        Some(v) => Ok((ENV_PATH_NAME, v)),
-        None => {
-            #[cfg(windows)]
-            match stack.get_env_var(engine_state, ENV_PATH_NAME_SECONDARY) {
-                Some(v) => Ok((ENV_PATH_NAME_SECONDARY, v)),
-                None => Err(ShellError::EnvVarNotFoundAtRuntime {
-                    envvar_name: ENV_PATH_NAME_SECONDARY.to_string(),
-                    span,
-                }),
-            }
-            #[cfg(not(windows))]
-            Err(ShellError::EnvVarNotFoundAtRuntime {
-                envvar_name: ENV_PATH_NAME.to_string(),
-                span,
-            })
-        }
+    let (pathname, pathval) = match stack.get_env_var_insensitive(engine_state, "path") {
+        Some((_, v)) => Ok((if cfg!(windows) { "Path" } else { "PATH" }, v)),
+        None => Err(ShellError::EnvVarNotFoundAtRuntime {
+            envvar_name: if cfg!(windows) {
+                "Path".to_string()
+            } else {
+                "PATH".to_string()
+            },
+            span,
+        }),
     }?;
 
-    env_to_string(pathname, &pathval, engine_state, stack)
+    env_to_string(pathname, pathval, engine_state, stack)
 }
 
 pub const DIR_VAR_PARSER_INFO: &str = "dirs_var";
-pub fn get_dirs_var_from_call(call: &Call) -> Option<VarId> {
-    call.get_parser_info(DIR_VAR_PARSER_INFO).and_then(|x| {
-        if let Expr::Var(id) = x.expr {
-            Some(id)
-        } else {
-            None
-        }
-    })
+pub fn get_dirs_var_from_call(stack: &Stack, call: &Call) -> Option<VarId> {
+    call.get_parser_info(stack, DIR_VAR_PARSER_INFO)
+        .and_then(|x| {
+            if let Expr::Var(id) = x.expr {
+                Some(id)
+            } else {
+                None
+            }
+        })
 }
 
 /// This helper function is used to find files during eval
@@ -299,7 +301,7 @@ pub fn find_in_dirs_env(
 ) -> Result<Option<PathBuf>, ShellError> {
     // Choose whether to use file-relative or PWD-relative path
     let cwd = if let Some(pwd) = stack.get_env_var(engine_state, "FILE_PWD") {
-        match env_to_string("FILE_PWD", &pwd, engine_state, stack) {
+        match env_to_string("FILE_PWD", pwd, engine_state, stack) {
             Ok(cwd) => {
                 if Path::new(&cwd).is_absolute() {
                     cwd
@@ -316,10 +318,10 @@ pub fn find_in_dirs_env(
             Err(e) => return Err(e),
         }
     } else {
-        current_dir_str(engine_state, stack)?
+        engine_state.cwd_as_string(Some(stack))?
     };
 
-    let check_dir = |lib_dirs: Option<Value>| -> Option<PathBuf> {
+    let check_dir = |lib_dirs: Option<&Value>| -> Option<PathBuf> {
         if let Ok(p) = canonicalize_with(filename, &cwd) {
             return Some(p);
         }
@@ -333,7 +335,7 @@ pub fn find_in_dirs_env(
             .ok()?
             .iter()
             .map(|lib_dir| -> Option<PathBuf> {
-                let dir = lib_dir.as_path().ok()?;
+                let dir = lib_dir.to_path().ok()?;
                 let dir_abs = canonicalize_with(dir, &cwd).ok()?;
                 canonicalize_with(filename, dir_abs).ok()
             })
@@ -341,23 +343,11 @@ pub fn find_in_dirs_env(
             .flatten()
     };
 
-    let lib_dirs = dirs_var.and_then(|var_id| engine_state.get_var(var_id).const_val.clone());
+    let lib_dirs = dirs_var.and_then(|var_id| engine_state.get_var(var_id).const_val.as_ref());
     // TODO: remove (see #8310)
     let lib_dirs_fallback = stack.get_env_var(engine_state, "NU_LIB_DIRS");
 
     Ok(check_dir(lib_dirs).or_else(|| check_dir(lib_dirs_fallback)))
-}
-
-/// Get config
-///
-/// This combines config stored in permanent state and any runtime updates to the environment. This
-/// is the canonical way to fetch config at runtime when you have Stack available.
-pub fn get_config(engine_state: &EngineState, stack: &Stack) -> Config {
-    if let Some(mut config_record) = stack.get_env_var(engine_state, "config") {
-        config_record.into_config(engine_state.get_config()).0
-    } else {
-        engine_state.get_config().clone()
-    }
 }
 
 fn get_converted_value(
@@ -366,60 +356,31 @@ fn get_converted_value(
     name: &str,
     orig_val: &Value,
     direction: &str,
-) -> ConversionResult {
-    let conversions = stack.get_env_var(engine_state, ENV_CONVERSIONS);
-    let conversion = conversions
-        .as_ref()
-        .and_then(|val| val.as_record().ok())
-        .and_then(|record| record.get(name))
-        .and_then(|val| val.as_record().ok())
-        .and_then(|record| record.get(direction));
+) -> Result<Value, ConversionError> {
+    let conversion = stack
+        .get_env_var(engine_state, ENV_CONVERSIONS)
+        .ok_or(ConversionError::CellPathError)?
+        .as_record()?
+        .get(name)
+        .ok_or(ConversionError::CellPathError)?
+        .as_record()?
+        .get(direction)
+        .ok_or(ConversionError::CellPathError)?
+        .as_closure()?;
 
-    if let Some(conversion) = conversion {
-        let from_span = conversion.span();
-        match conversion.as_closure() {
-            Ok(val) => {
-                let block = engine_state.get_block(val.block_id);
-
-                if let Some(var) = block.signature.get_positional(0) {
-                    let mut stack = stack.gather_captures(engine_state, &block.captures);
-                    if let Some(var_id) = &var.var_id {
-                        stack.add_var(*var_id, orig_val.clone());
-                    }
-
-                    let val_span = orig_val.span();
-                    let result = eval_block(
-                        engine_state,
-                        &mut stack,
-                        block,
-                        PipelineData::new_with_metadata(None, val_span),
-                        true,
-                        true,
-                    );
-
-                    match result {
-                        Ok(data) => ConversionResult::Ok(data.into_value(val_span)),
-                        Err(e) => ConversionResult::ConversionError(e),
-                    }
-                } else {
-                    ConversionResult::ConversionError(ShellError::MissingParameter {
-                        param_name: "block input".into(),
-                        span: from_span,
-                    })
-                }
-            }
-            Err(e) => ConversionResult::ConversionError(e),
-        }
-    } else {
-        ConversionResult::CellPathError
-    }
+    Ok(
+        ClosureEvalOnce::new(engine_state, stack, conversion.clone())
+            .debug(false)
+            .run_with_value(orig_val.clone())?
+            .into_value(orig_val.span())?,
+    )
 }
 
-fn ensure_path(scope: &mut HashMap<String, Value>, env_path_name: &str) -> Option<ShellError> {
+fn ensure_path(engine_state: &EngineState, stack: &mut Stack) -> Option<ShellError> {
     let mut error = None;
 
     // If PATH/Path is still a string, force-convert it to a list
-    if let Some(value) = scope.get(env_path_name) {
+    if let Some((preserve_case_name, value)) = stack.get_env_var_insensitive(engine_state, "Path") {
         let span = value.span();
         match value {
             Value::String { val, .. } => {
@@ -428,15 +389,17 @@ fn ensure_path(scope: &mut HashMap<String, Value>, env_path_name: &str) -> Optio
                     .map(|p| Value::string(p.to_string_lossy().to_string(), span))
                     .collect();
 
-                scope.insert(env_path_name.to_string(), Value::list(paths, span));
+                stack.add_env_var(preserve_case_name.to_string(), Value::list(paths, span));
             }
             Value::List { vals, .. } => {
                 // Must be a list of strings
                 if !vals.iter().all(|v| matches!(v, Value::String { .. })) {
                     error = error.or_else(|| {
                         Some(ShellError::GenericError {
-                            error: format!("Wrong {env_path_name} environment variable value"),
-                            msg: format!("{env_path_name} must be a list of strings"),
+                            error: format!(
+                                "Incorrect {preserve_case_name} environment variable value"
+                            ),
+                            msg: format!("{preserve_case_name} must be a list of strings"),
                             span: Some(span),
                             help: None,
                             inner: vec![],
@@ -451,8 +414,8 @@ fn ensure_path(scope: &mut HashMap<String, Value>, env_path_name: &str) -> Optio
 
                 error = error.or_else(|| {
                     Some(ShellError::GenericError {
-                        error: format!("Wrong {env_path_name} environment variable value"),
-                        msg: format!("{env_path_name} must be a list of strings"),
+                        error: format!("Incorrect {preserve_case_name} environment variable value"),
+                        msg: format!("{preserve_case_name} must be a list of strings"),
                         span: Some(span),
                         help: None,
                         inner: vec![],

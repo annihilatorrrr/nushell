@@ -1,2 +1,2 @@
-#[cfg(feature = "extra")]
+mod bits;
 mod bytes;

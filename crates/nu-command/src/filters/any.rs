@@ -1,10 +1,5 @@
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, PipelineData, ShellError, Signature, SyntaxShape, Type, Value,
-};
-
 use super::utils;
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Any;
@@ -16,19 +11,16 @@ impl Command for Any {
 
     fn signature(&self) -> Signature {
         Signature::build(self.name())
-            .input_output_types(vec![
-                (Type::List(Box::new(Type::Any)), Type::Bool),
-                (Type::Table(vec![]), Type::Bool),
-            ])
+            .input_output_types(vec![(Type::List(Box::new(Type::Any)), Type::Bool)])
             .required(
                 "predicate",
-                SyntaxShape::Closure(Some(vec![SyntaxShape::Any, SyntaxShape::Int])),
+                SyntaxShape::Closure(Some(vec![SyntaxShape::Any])),
                 "A closure that must evaluate to a boolean.",
             )
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Tests if any element of the input fulfills a predicate expression."
     }
 

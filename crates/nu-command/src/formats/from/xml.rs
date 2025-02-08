@@ -1,12 +1,7 @@
 use crate::formats::nu_xml_format::{COLUMN_ATTRS_NAME, COLUMN_CONTENT_NAME, COLUMN_TAG_NAME};
-use indexmap::map::IndexMap;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, IntoPipelineData, PipelineData, Record, ShellError, Signature, Span,
-    Type, Value,
-};
+use indexmap::IndexMap;
+use nu_engine::command_prelude::*;
+
 use roxmltree::NodeType;
 
 #[derive(Clone)]
@@ -19,7 +14,7 @@ impl Command for FromXml {
 
     fn signature(&self) -> Signature {
         Signature::build("from xml")
-            .input_output_types(vec![(Type::String, Type::Record(vec![]))])
+            .input_output_types(vec![(Type::String, Type::record())])
             .switch("keep-comments", "add comment nodes to result", None)
             .switch(
                 "keep-pi",
@@ -29,11 +24,11 @@ impl Command for FromXml {
             .category(Category::Formats)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Parse text as .xml and create record."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"Every XML entry is represented via a record with tag, attribute and content fields.
 To represent different types of entries different values are written to this fields:
 1. Tag entry: `{tag: <tag name> attrs: {<attr name>: "<string value>" ...} content: [<entries>]}`
@@ -202,16 +197,18 @@ fn from_document_to_value(d: &roxmltree::Document, info: &ParsingInfo) -> Value 
     element_to_value(&d.root_element(), info)
 }
 
-fn from_xml_string_to_value(s: String, info: &ParsingInfo) -> Result<Value, roxmltree::Error> {
-    let parsed = roxmltree::Document::parse(&s)?;
+fn from_xml_string_to_value(s: &str, info: &ParsingInfo) -> Result<Value, roxmltree::Error> {
+    let parsed = roxmltree::Document::parse(s)?;
     Ok(from_document_to_value(&parsed, info))
 }
 
 fn from_xml(input: PipelineData, info: &ParsingInfo) -> Result<PipelineData, ShellError> {
     let (concat_string, span, metadata) = input.collect_string_strict(info.span)?;
 
-    match from_xml_string_to_value(concat_string, info) {
-        Ok(x) => Ok(x.into_pipeline_data_with_metadata(metadata)),
+    match from_xml_string_to_value(&concat_string, info) {
+        Ok(x) => {
+            Ok(x.into_pipeline_data_with_metadata(metadata.map(|md| md.with_content_type(None))))
+        }
         Err(err) => Err(process_xml_parse_error(err, span)),
     }
 }
@@ -280,7 +277,39 @@ fn process_xml_parse_error(err: roxmltree::Error, span: Span) -> ShellError {
         roxmltree::Error::NamespacesLimitReached => {
             make_cant_convert_error("Namespace limit reached", span)
         }
-        roxmltree::Error::ParserError(_) => make_cant_convert_error("Parser error", span),
+        roxmltree::Error::UnexpectedDeclaration(_) => {
+            make_cant_convert_error("An XML document can have only one XML declaration and it must be at the start of the document.", span)
+        }
+        roxmltree::Error::InvalidName(_) => {
+            make_cant_convert_error("Invalid name found.", span)
+        }
+        roxmltree::Error::NonXmlChar(_, _) => {
+            make_cant_convert_error("A non-XML character has occurred. Valid characters are: <https://www.w3.org/TR/xml/#char32>", span)
+        }
+        roxmltree::Error::InvalidChar(_, _, _) => {
+            make_cant_convert_error("An invalid/unexpected character in XML.", span)
+        }
+        roxmltree::Error::InvalidChar2(_, _, _) => {
+            make_cant_convert_error("An invalid/unexpected character in XML.", span)
+        }
+        roxmltree::Error::InvalidString(_, _) => {
+            make_cant_convert_error("An invalid/unexpected string in XML.", span)
+        }
+        roxmltree::Error::InvalidExternalID(_) => {
+            make_cant_convert_error("An invalid ExternalID in the DTD.", span)
+        }
+        roxmltree::Error::InvalidComment(_) => {
+            make_cant_convert_error("A comment cannot contain `--` or end with `-`.", span)
+        }
+        roxmltree::Error::InvalidCharacterData(_) => {
+            make_cant_convert_error("A Character Data node contains an invalid data. Currently, only `]]>` is not allowed.", span)
+        }
+        roxmltree::Error::UnknownToken(_) => {
+            make_cant_convert_error("Unknown token in XML.", span)
+        }
+        roxmltree::Error::UnexpectedEndOfStream => {
+            make_cant_convert_error("Unexpected end of stream while parsing XML.", span)
+        }
     }
 }
 
@@ -295,10 +324,14 @@ fn make_cant_convert_error(help: impl Into<String>, span: Span) -> ShellError {
 
 #[cfg(test)]
 mod tests {
+    use crate::Metadata;
+    use crate::MetadataSet;
+
     use super::*;
 
     use indexmap::indexmap;
     use indexmap::IndexMap;
+    use nu_cmd_lang::eval_pipeline_without_terminal_expression;
 
     fn string(input: impl Into<String>) -> Value {
         Value::test_string(input)
@@ -343,7 +376,7 @@ mod tests {
             keep_comments: false,
             keep_processing_instructions: false,
         };
-        from_xml_string_to_value(xml.to_string(), &info)
+        from_xml_string_to_value(xml, &info)
     }
 
     #[test]
@@ -385,7 +418,7 @@ mod tests {
             content_tag(
                 "nu",
                 indexmap! {},
-                &vec![
+                &[
                     content_tag("dev", indexmap! {}, &[content_string("Andrés")]),
                     content_tag("dev", indexmap! {}, &[content_string("JT")]),
                     content_tag("dev", indexmap! {}, &[content_string("Yehuda")])
@@ -452,5 +485,37 @@ mod tests {
         use crate::test_examples;
 
         test_examples(FromXml {})
+    }
+
+    #[test]
+    fn test_content_type_metadata() {
+        let mut engine_state = Box::new(EngineState::new());
+        let delta = {
+            let mut working_set = StateWorkingSet::new(&engine_state);
+
+            working_set.add_decl(Box::new(FromXml {}));
+            working_set.add_decl(Box::new(Metadata {}));
+            working_set.add_decl(Box::new(MetadataSet {}));
+
+            working_set.render()
+        };
+
+        engine_state
+            .merge_delta(delta)
+            .expect("Error merging delta");
+
+        let cmd = r#"'<?xml version="1.0" encoding="UTF-8"?>
+<note>
+  <remember>Event</remember>
+</note>' | metadata set --content-type 'application/xml' --datasource-ls | from xml | metadata | $in"#;
+        let result = eval_pipeline_without_terminal_expression(
+            cmd,
+            std::env::temp_dir().as_ref(),
+            &mut engine_state,
+        );
+        assert_eq!(
+            Value::test_record(record!("source" => Value::test_string("ls"))),
+            result.expect("There should be a result")
+        )
     }
 }

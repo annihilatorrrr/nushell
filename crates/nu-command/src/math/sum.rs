@@ -1,8 +1,8 @@
-use crate::math::reducers::{reducer_for, Reduce};
-use crate::math::utils::run_with_function;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use crate::math::{
+    reducers::{reducer_for, Reduce},
+    utils::run_with_function,
+};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -19,13 +19,14 @@ impl Command for SubCommand {
                 (Type::List(Box::new(Type::Duration)), Type::Duration),
                 (Type::List(Box::new(Type::Filesize)), Type::Filesize),
                 (Type::Range, Type::Number),
-                (Type::Table(vec![]), Type::Table(vec![])),
+                (Type::table(), Type::record()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns the sum of a list of numbers or of each column in a table."
     }
 
@@ -33,10 +34,23 @@ impl Command for SubCommand {
         vec!["plus", "add", "total", "+"]
     }
 
+    fn is_const(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         _engine_state: &EngineState,
         _stack: &mut Stack,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        run_with_function(call, input, summation)
+    }
+
+    fn run_const(
+        &self,
+        _working_set: &StateWorkingSet,
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
@@ -54,6 +68,14 @@ impl Command for SubCommand {
                 description: "Get the disk usage for the current directory",
                 example: "ls | get size | math sum",
                 result: None,
+            },
+            Example {
+                description: "Compute the sum of each column in a table",
+                example: "[[a b]; [1 2] [3 4]] | math sum",
+                result: Some(Value::test_record(record! {
+                    "a" => Value::test_int(4),
+                    "b" => Value::test_int(6),
+                })),
             },
         ]
     }

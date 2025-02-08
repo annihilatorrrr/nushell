@@ -1,11 +1,12 @@
-use crate::completions::{Completer, CompletionOptions};
+use crate::completions::{completion_options::NuMatcher, Completer, CompletionOptions};
 use nu_protocol::{
     ast::{Expr, Expression},
-    engine::StateWorkingSet,
+    engine::{Stack, StateWorkingSet},
     Span,
 };
-
 use reedline::Suggestion;
+
+use super::SemanticSuggestion;
 
 #[derive(Clone)]
 pub struct FlagCompletion {
@@ -22,18 +23,19 @@ impl Completer for FlagCompletion {
     fn fetch(
         &mut self,
         working_set: &StateWorkingSet,
-        prefix: Vec<u8>,
+        _stack: &Stack,
+        prefix: &[u8],
         span: Span,
         offset: usize,
-        _: usize,
+        _pos: usize,
         options: &CompletionOptions,
-    ) -> Vec<Suggestion> {
+    ) -> Vec<SemanticSuggestion> {
         // Check if it's a flag
         if let Expr::Call(call) = &self.expression.expr {
             let decl = working_set.get_decl(call.decl_id);
             let sig = decl.signature();
 
-            let mut output = vec![];
+            let mut matcher = NuMatcher::new(String::from_utf8_lossy(prefix), options.clone());
 
             for named in &sig.named {
                 let flag_desc = &named.desc;
@@ -42,18 +44,20 @@ impl Completer for FlagCompletion {
                     short.encode_utf8(&mut named);
                     named.insert(0, b'-');
 
-                    if options.match_algorithm.matches_u8(&named, &prefix) {
-                        output.push(Suggestion {
+                    matcher.add_semantic_suggestion(SemanticSuggestion {
+                        suggestion: Suggestion {
                             value: String::from_utf8_lossy(&named).to_string(),
                             description: Some(flag_desc.to_string()),
-                            extra: None,
                             span: reedline::Span {
                                 start: span.start - offset,
                                 end: span.end - offset,
                             },
                             append_whitespace: true,
-                        });
-                    }
+                            ..Suggestion::default()
+                        },
+                        // TODO????
+                        kind: None,
+                    });
                 }
 
                 if named.long.is_empty() {
@@ -64,21 +68,23 @@ impl Completer for FlagCompletion {
                 named.insert(0, b'-');
                 named.insert(0, b'-');
 
-                if options.match_algorithm.matches_u8(&named, &prefix) {
-                    output.push(Suggestion {
+                matcher.add_semantic_suggestion(SemanticSuggestion {
+                    suggestion: Suggestion {
                         value: String::from_utf8_lossy(&named).to_string(),
                         description: Some(flag_desc.to_string()),
-                        extra: None,
                         span: reedline::Span {
                             start: span.start - offset,
                             end: span.end - offset,
                         },
                         append_whitespace: true,
-                    });
-                }
+                        ..Suggestion::default()
+                    },
+                    // TODO????
+                    kind: None,
+                });
             }
 
-            return output;
+            return matcher.results();
         }
 
         vec![]

@@ -1,9 +1,11 @@
 use nu_engine::eval_block;
 use nu_parser::parse;
 use nu_protocol::{
-    engine::{EngineState, Stack, StateWorkingSet},
-    PipelineData, ShellError, Value,
+    debugger::WithoutDebug,
+    engine::{EngineState, Redirection, Stack, StateWorkingSet},
+    OutDest, PipelineData, ShellError, Value,
 };
+use std::sync::Arc;
 
 pub fn run_command_with_value(
     command: &str,
@@ -12,16 +14,24 @@ pub fn run_command_with_value(
     stack: &mut Stack,
 ) -> Result<PipelineData, ShellError> {
     if is_ignored_command(command) {
-        return Err(ShellError::IOError {
-            msg: String::from("the command is ignored"),
+        return Err(ShellError::GenericError {
+            error: "Command ignored".to_string(),
+            msg: "the command is ignored".to_string(),
+            span: None,
+            help: None,
+            inner: vec![],
         });
     }
 
     let pipeline = PipelineData::Value(input.clone(), None);
     let pipeline = run_nu_command(engine_state, stack, command, pipeline)?;
     if let PipelineData::Value(Value::Error { error, .. }, ..) = pipeline {
-        Err(ShellError::IOError {
+        Err(ShellError::GenericError {
+            error: "Error from pipeline".to_string(),
             msg: error.to_string(),
+            span: None,
+            help: None,
+            inner: vec![*error],
         })
     } else {
         Ok(pipeline)
@@ -67,8 +77,12 @@ fn eval_source2(
         );
 
         if let Some(err) = working_set.parse_errors.first() {
-            return Err(ShellError::IOError {
+            return Err(ShellError::GenericError {
+                error: "Parse error".to_string(),
                 msg: err.to_string(),
+                span: None,
+                help: None,
+                inner: vec![],
             });
         }
 
@@ -77,8 +91,12 @@ fn eval_source2(
 
     // We need to merge different info other wise things like PIPEs etc will not work.
     if let Err(err) = engine_state.merge_delta(delta) {
-        return Err(ShellError::IOError {
+        return Err(ShellError::GenericError {
+            error: "Merge error".to_string(),
             msg: err.to_string(),
+            span: None,
+            help: None,
+            inner: vec![err],
         });
     }
 
@@ -87,8 +105,15 @@ fn eval_source2(
     //
     // So we LITERALLY ignore all expressions except the LAST.
     if block.len() > 1 {
-        block.pipelines.drain(..block.pipelines.len() - 1);
+        let range = ..block.pipelines.len() - 1;
+        // Note: `make_mut` will mutate `&mut block: &mut Arc<Block>`
+        // for the outer fn scope `eval_block`
+        Arc::make_mut(&mut block).pipelines.drain(range);
     }
 
-    eval_block(engine_state, stack, &block, input, true, true)
+    let stack = &mut stack.push_redirection(
+        Some(Redirection::Pipe(OutDest::PipeSeparate)),
+        Some(Redirection::Pipe(OutDest::PipeSeparate)),
+    );
+    eval_block::<WithoutDebug>(engine_state, stack, &block, input)
 }

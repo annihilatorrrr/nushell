@@ -1,16 +1,10 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, PipelineData, ShellError, Signature, SyntaxShape, Type, Value,
-};
-
 use crate::network::http::client::{
     http_client, http_parse_url, request_add_authorization_header, request_add_custom_headers,
-    request_handle_response, request_set_timeout, send_request,
+    request_handle_response, request_set_timeout, send_request, RedirectMode, RequestFlags,
 };
+use nu_engine::command_prelude::*;
 
-use super::client::{RedirectMode, RequestFlags};
+use super::client::HttpBody;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -43,8 +37,8 @@ impl Command for SubCommand {
             )
             .named(
                 "max-time",
-                SyntaxShape::Int,
-                "timeout period in seconds",
+                SyntaxShape::Duration,
+                "max duration before timeout occurs",
                 Some('m'),
             )
             .named(
@@ -67,11 +61,11 @@ impl Command for SubCommand {
             .category(Category::Network)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Requests permitted communication options for a given URL."
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         "Performs an HTTP OPTIONS request. Most commonly used for making CORS preflight requests."
     }
 
@@ -157,7 +151,6 @@ fn helper(
     args: Arguments,
 ) -> Result<PipelineData, ShellError> {
     let span = args.url.span();
-    let ctrl_c = engine_state.ctrlc.clone();
     let (requested_url, _) = http_parse_url(call, span, args.url)?;
 
     let client = http_client(args.insecure, RedirectMode::Follow, engine_state, stack)?;
@@ -167,7 +160,14 @@ fn helper(
     request = request_add_authorization_header(args.user, args.password, request);
     request = request_add_custom_headers(args.headers, request)?;
 
-    let response = send_request(request.clone(), None, None, ctrl_c);
+    let response = send_request(
+        engine_state,
+        request.clone(),
+        HttpBody::None,
+        None,
+        call.head,
+        engine_state.signals(),
+    );
 
     // http options' response always showed in header, so we set full to true.
     // And `raw` is useless too because options method doesn't return body, here we set to true

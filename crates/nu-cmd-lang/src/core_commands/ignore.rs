@@ -1,6 +1,5 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack, StateWorkingSet};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Span, Type, Value};
+use nu_engine::command_prelude::*;
+use nu_protocol::{engine::StateWorkingSet, ByteStreamSource, OutDest};
 
 #[derive(Clone)]
 pub struct Ignore;
@@ -10,7 +9,7 @@ impl Command for Ignore {
         "ignore"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Ignore the output of the previous command in the pipeline."
     }
 
@@ -32,20 +31,26 @@ impl Command for Ignore {
         &self,
         _engine_state: &EngineState,
         _stack: &mut Stack,
-        call: &Call,
-        input: PipelineData,
+        _call: &Call,
+        mut input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        input.into_value(call.head);
+        if let PipelineData::ByteStream(stream, _) = &mut input {
+            #[cfg(feature = "os")]
+            if let ByteStreamSource::Child(child) = stream.source_mut() {
+                child.ignore_error(true);
+            }
+        }
+        input.drain()?;
         Ok(PipelineData::empty())
     }
 
     fn run_const(
         &self,
         _working_set: &StateWorkingSet,
-        call: &Call,
+        _call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        input.into_value(call.head);
+        input.drain()?;
         Ok(PipelineData::empty())
     }
 
@@ -55,6 +60,10 @@ impl Command for Ignore {
             example: "echo done | ignore",
             result: Some(Value::nothing(Span::test_data())),
         }]
+    }
+
+    fn pipe_redirection(&self) -> (Option<OutDest>, Option<OutDest>) {
+        (Some(OutDest::Null), None)
     }
 }
 

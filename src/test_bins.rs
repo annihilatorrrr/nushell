@@ -1,10 +1,16 @@
-use nu_cmd_base::hook::{eval_env_change_hook, eval_hook};
+use nu_cmd_base::hook::{eval_env_change_hook, eval_hooks};
 use nu_engine::eval_block;
 use nu_parser::parse;
-use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
-use nu_protocol::{CliError, PipelineData, Value};
+use nu_protocol::{
+    debugger::WithoutDebug,
+    engine::{EngineState, Stack, StateWorkingSet},
+    report_parse_error, report_shell_error, PipelineData, ShellError, Value,
+};
 use nu_std::load_standard_library;
-use std::io::{self, BufRead, Read, Write};
+use std::{
+    io::{self, BufRead, Read, Write},
+    sync::Arc,
+};
 
 /// Echo's value of env keys from args
 /// Example: nu --testbin env_echo FOO BAR
@@ -14,6 +20,11 @@ pub fn echo_env(to_stdout: bool) {
     for arg in args {
         echo_one_env(&arg, to_stdout)
     }
+}
+
+pub fn echo_env_and_fail(to_stdout: bool) {
+    echo_env(to_stdout);
+    fail();
 }
 
 fn echo_one_env(arg: &str, to_stdout: bool) {
@@ -58,7 +69,7 @@ pub fn echo_env_mixed() {
 }
 
 /// Cross platform echo using println!()
-/// Example: nu --testbin echo a b c
+/// Example: nu --testbin cococo a b c
 /// a b c
 pub fn cococo() {
     let args: Vec<String> = args();
@@ -181,7 +192,7 @@ pub fn chop() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
-    for given in stdin.lock().lines().flatten() {
+    for given in stdin.lock().lines().map_while(Result::ok) {
         let chopped = if given.is_empty() {
             &given
         } else {
@@ -197,20 +208,13 @@ pub fn chop() {
     std::process::exit(0);
 }
 
-fn outcome_err(
-    engine_state: &EngineState,
-    error: &(dyn miette::Diagnostic + Send + Sync + 'static),
-) -> ! {
-    let working_set = StateWorkingSet::new(engine_state);
-
-    eprintln!("Error: {:?}", CliError(error, &working_set));
-
+fn outcome_err(engine_state: &EngineState, error: &ShellError) -> ! {
+    report_shell_error(engine_state, error);
     std::process::exit(1);
 }
 
 fn outcome_ok(msg: String) -> ! {
     println!("{msg}");
-
     std::process::exit(0);
 }
 
@@ -227,43 +231,33 @@ pub fn nu_repl() {
     let source_lines = args();
 
     let mut engine_state = get_engine_state();
-    let mut stack = Stack::new();
+    let mut top_stack = Arc::new(Stack::new());
 
     engine_state.add_env_var("PWD".into(), Value::test_string(cwd.to_string_lossy()));
+    engine_state.add_env_var("PATH".into(), Value::test_string(""));
 
     let mut last_output = String::new();
 
     load_standard_library(&mut engine_state).expect("Could not load the standard library.");
 
     for (i, line) in source_lines.iter().enumerate() {
-        let cwd = nu_engine::env::current_dir(&engine_state, &stack)
-            .unwrap_or_else(|err| outcome_err(&engine_state, &err));
+        let mut stack = Stack::with_parent(top_stack.clone());
 
         // Before doing anything, merge the environment from the previous REPL iteration into the
         // permanent state.
-        if let Err(err) = engine_state.merge_env(&mut stack, &cwd) {
+        if let Err(err) = engine_state.merge_env(&mut stack) {
             outcome_err(&engine_state, &err);
         }
 
         // Check for pre_prompt hook
-        let config = engine_state.get_config();
-        if let Some(hook) = config.hooks.pre_prompt.clone() {
-            if let Err(err) = eval_hook(
-                &mut engine_state,
-                &mut stack,
-                None,
-                vec![],
-                &hook,
-                "pre_prompt",
-            ) {
-                outcome_err(&engine_state, &err);
-            }
+        let hook = engine_state.get_config().hooks.pre_prompt.clone();
+        if let Err(err) = eval_hooks(&mut engine_state, &mut stack, vec![], &hook, "pre_prompt") {
+            outcome_err(&engine_state, &err);
         }
 
         // Check for env change hook
-        let config = engine_state.get_config();
         if let Err(err) = eval_env_change_hook(
-            config.hooks.env_change.clone(),
+            &engine_state.get_config().hooks.env_change.clone(),
             &mut engine_state,
             &mut stack,
         ) {
@@ -271,7 +265,6 @@ pub fn nu_repl() {
         }
 
         // Check for pre_execution hook
-        let config = engine_state.get_config();
 
         engine_state
             .repl_state
@@ -279,17 +272,15 @@ pub fn nu_repl() {
             .expect("repl state mutex")
             .buffer = line.to_string();
 
-        if let Some(hook) = config.hooks.pre_execution.clone() {
-            if let Err(err) = eval_hook(
-                &mut engine_state,
-                &mut stack,
-                None,
-                vec![],
-                &hook,
-                "pre_execution",
-            ) {
-                outcome_err(&engine_state, &err);
-            }
+        let hook = engine_state.get_config().hooks.pre_execution.clone();
+        if let Err(err) = eval_hooks(
+            &mut engine_state,
+            &mut stack,
+            vec![],
+            &hook,
+            "pre_execution",
+        ) {
+            outcome_err(&engine_state, &err);
         }
 
         // Eval the REPL line
@@ -303,7 +294,8 @@ pub fn nu_repl() {
             );
 
             if let Some(err) = working_set.parse_errors.first() {
-                outcome_err(&engine_state, err);
+                report_parse_error(&working_set, err);
+                std::process::exit(1);
             }
             (block, working_set.render())
         };
@@ -315,21 +307,25 @@ pub fn nu_repl() {
         let input = PipelineData::empty();
         let config = engine_state.get_config();
 
-        match eval_block(&engine_state, &mut stack, &block, input, false, false) {
-            Ok(pipeline_data) => match pipeline_data.collect_string("", config) {
-                Ok(s) => last_output = s,
+        {
+            let stack = &mut stack.start_collect_value();
+            match eval_block::<WithoutDebug>(&engine_state, stack, &block, input) {
+                Ok(pipeline_data) => match pipeline_data.collect_string("", config) {
+                    Ok(s) => last_output = s,
+                    Err(err) => outcome_err(&engine_state, &err),
+                },
                 Err(err) => outcome_err(&engine_state, &err),
-            },
-            Err(err) => outcome_err(&engine_state, &err),
+            }
         }
 
         if let Some(cwd) = stack.get_env_var(&engine_state, "PWD") {
             let path = cwd
-                .as_string()
+                .coerce_str()
                 .unwrap_or_else(|err| outcome_err(&engine_state, &err));
-            let _ = std::env::set_current_dir(path);
-            engine_state.add_env_var("PWD".into(), cwd);
+            let _ = std::env::set_current_dir(path.as_ref());
+            engine_state.add_env_var("PWD".into(), cwd.clone());
         }
+        top_stack = Arc::new(Stack::with_changes_from_child(top_stack, stack));
     }
 
     outcome_ok(last_output)

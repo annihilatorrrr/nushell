@@ -1,11 +1,6 @@
 use crate::math::utils::run_with_function;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    record, Category, Example, PipelineData, ShellError, Signature, Span, Type, Value,
-};
-use std::cmp::Ordering;
-use std::collections::HashMap;
+use nu_engine::command_prelude::*;
+use std::{cmp::Ordering, collections::HashMap};
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -53,13 +48,13 @@ impl Command for SubCommand {
                     Type::List(Box::new(Type::Filesize)),
                     Type::List(Box::new(Type::Filesize)),
                 ),
-                (Type::Table(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .category(Category::Math)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns the most frequent element(s) from a list of numbers or tables."
     }
 
@@ -67,10 +62,23 @@ impl Command for SubCommand {
         vec!["common", "often"]
     }
 
+    fn is_const(&self) -> bool {
+        true
+    }
+
     fn run(
         &self,
         _engine_state: &EngineState,
         _stack: &mut Stack,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        run_with_function(call, input, mode)
+    }
+
+    fn run_const(
+        &self,
+        _working_set: &StateWorkingSet,
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
@@ -134,9 +142,10 @@ pub fn mode(values: &[Value], _span: Span, head: Span) -> Result<Value, ShellErr
             Value::Float { val, .. } => {
                 Ok(HashableType::new(val.to_ne_bytes(), NumberTypes::Float))
             }
-            Value::Filesize { val, .. } => {
-                Ok(HashableType::new(val.to_ne_bytes(), NumberTypes::Filesize))
-            }
+            Value::Filesize { val, .. } => Ok(HashableType::new(
+                val.get().to_ne_bytes(),
+                NumberTypes::Filesize,
+            )),
             Value::Error { error, .. } => Err(*error.clone()),
             other => Err(ShellError::UnsupportedInput {
                 msg: "Unable to give a result with this input".to_string(),

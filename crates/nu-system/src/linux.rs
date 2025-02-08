@@ -106,7 +106,7 @@ pub fn collect_proc(interval: Duration, _with_thread: bool) -> Vec<ProcessInfo> 
         let curr_stat = curr_proc.stat().ok();
         let curr_status = curr_proc.status().ok();
         let curr_time = Instant::now();
-        let interval = curr_time - prev_time;
+        let interval = curr_time.saturating_duration_since(prev_time);
         let ppid = curr_proc.stat().map(|p| p.ppid).unwrap_or_default();
         let curr_proc = ProcessTask::Process(curr_proc);
 
@@ -142,31 +142,33 @@ impl ProcessInfo {
 
     /// Name of command
     pub fn name(&self) -> String {
-        self.command()
-            .split(' ')
-            .collect::<Vec<_>>()
-            .first()
-            .map(|x| x.to_string())
-            .unwrap_or_default()
+        if let Some(name) = self.comm() {
+            return name;
+        }
+        // Fall back in case /proc/<pid>/stat source is not available.
+        if let Ok(mut cmd) = self.curr_proc.cmdline() {
+            if let Some(name) = cmd.first_mut() {
+                // Take over the first element and return it without extra allocations
+                // (String::default() is allocation-free).
+                return std::mem::take(name);
+            }
+        }
+        String::new()
     }
 
     /// Full name of command, with arguments
+    ///
+    /// WARNING: As this does no escaping, this function is lossy. It's OK-ish for display purposes
+    /// but nothing else.
+    // TODO: Maybe rename this to display_command and add escaping compatible with nushell?
     pub fn command(&self) -> String {
-        if let Ok(cmd) = &self.curr_proc.cmdline() {
+        if let Ok(cmd) = self.curr_proc.cmdline() {
+            // Things like kworker/0:0 still have the cmdline file in proc, even though it's empty.
             if !cmd.is_empty() {
-                cmd.join(" ").replace(['\n', '\t'], " ")
-            } else {
-                match self.curr_proc.stat() {
-                    Ok(p) => p.comm,
-                    Err(_) => "".to_string(),
-                }
-            }
-        } else {
-            match self.curr_proc.stat() {
-                Ok(p) => p.comm,
-                Err(_) => "".to_string(),
+                return cmd.join(" ").replace(['\n', '\t'], " ");
             }
         }
+        self.comm().unwrap_or_default()
     }
 
     pub fn cwd(&self) -> String {
@@ -203,7 +205,8 @@ impl ProcessInfo {
                 let curr_time = cs.utime + cs.stime;
                 let prev_time = ps.utime + ps.stime;
 
-                let usage_ms = (curr_time - prev_time) * 1000 / procfs::ticks_per_second();
+                let usage_ms =
+                    curr_time.saturating_sub(prev_time) * 1000 / procfs::ticks_per_second();
                 let interval_ms =
                     self.interval.as_secs() * 1000 + u64::from(self.interval.subsec_millis());
                 usage_ms as f64 * 100.0 / interval_ms as f64
@@ -226,5 +229,9 @@ impl ProcessInfo {
     /// Virtual memory size in bytes
     pub fn virtual_size(&self) -> u64 {
         self.curr_proc.stat().map(|p| p.vsize).unwrap_or_default()
+    }
+
+    fn comm(&self) -> Option<String> {
+        self.curr_proc.stat().map(|st| st.comm).ok()
     }
 }

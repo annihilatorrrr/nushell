@@ -1,13 +1,16 @@
+use std::path::PathBuf;
+
 use nu_test_support::fs::Stub::EmptyFile;
 use nu_test_support::fs::Stub::FileWithContent;
 use nu_test_support::fs::Stub::FileWithContentToBeTrimmed;
 use nu_test_support::playground::Playground;
 use nu_test_support::{nu, pipeline};
+use rstest::rstest;
 
 #[test]
 fn parses_file_with_uppercase_extension() {
     Playground::setup("open_test_uppercase_extension", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContent(
+        sandbox.with_files(&[FileWithContent(
             "nu.zion.JSON",
             r#"{
                 "glossary": {
@@ -37,7 +40,7 @@ fn parses_file_with_uppercase_extension() {
 #[test]
 fn parses_file_with_multiple_extensions() {
     Playground::setup("open_test_multiple_extensions", |dirs, sandbox| {
-        sandbox.with_files(vec![
+        sandbox.with_files(&[
             FileWithContent("file.tar.gz", "this is a tar.gz file"),
             FileWithContent("file.tar.xz", "this is a tar.xz file"),
         ]);
@@ -76,7 +79,7 @@ fn parses_file_with_multiple_extensions() {
 #[test]
 fn parses_dotfile() {
     Playground::setup("open_test_dotfile", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContent(
+        sandbox.with_files(&[FileWithContent(
             ".gitignore",
             r#"
               /target/
@@ -100,7 +103,7 @@ fn parses_dotfile() {
 #[test]
 fn parses_csv() {
     Playground::setup("open_test_1", |dirs, sandbox| {
-        sandbox.with_files(vec![FileWithContentToBeTrimmed(
+        sandbox.with_files(&[FileWithContentToBeTrimmed(
             "nu.zion.csv",
             r#"
                     author,lang,source
@@ -237,22 +240,6 @@ fn parses_xml() {
     assert_eq!(actual.out, "https://www.jntrnr.com/off-to-new-adventures/")
 }
 
-#[cfg(feature = "dataframe")]
-#[test]
-fn parses_arrow_ipc() {
-    let actual = nu!(
-        cwd: "tests/fixtures/formats", pipeline(
-        "
-            dfr open caco3_plastics.arrow
-            | dfr into-nu
-            | first
-            | get origin
-        "
-    ));
-
-    assert_eq!(actual.out, "SPAIN")
-}
-
 #[test]
 fn errors_if_file_not_found() {
     let actual = nu!(
@@ -263,14 +250,13 @@ fn errors_if_file_not_found() {
     //
     // This seems to be not directly affected by localization compared to the OS
     // provided error message
-    let expected = "File not found";
 
-    assert!(
-        actual.err.contains(expected),
-        "Error:\n{}\ndoes not contain{}",
-        actual.err,
-        expected
-    );
+    assert!(actual.err.contains("nu::shell::io::not_found"));
+    assert!(actual.err.contains(
+        &PathBuf::from_iter(["tests", "fixtures", "formats", "i_dont_exist.txt"])
+            .display()
+            .to_string()
+    ));
 }
 
 #[test]
@@ -317,7 +303,7 @@ fn test_open_block_command() {
 #[test]
 fn open_ignore_ansi() {
     Playground::setup("open_test_ansi", |dirs, sandbox| {
-        sandbox.with_files(vec![EmptyFile("nu.zion.txt")]);
+        sandbox.with_files(&[EmptyFile("nu.zion.txt")]);
 
         let actual = nu!(
             cwd: dirs.test(), pipeline(
@@ -335,4 +321,131 @@ fn open_no_parameter() {
     let actual = nu!("open");
 
     assert!(actual.err.contains("needs filename"));
+}
+
+#[rstest]
+#[case("a]c")]
+#[case("a[c")]
+#[case("a[bc]d")]
+#[case("a][c")]
+fn open_files_with_glob_metachars(#[case] src_name: &str) {
+    Playground::setup("open_test_with_glob_metachars", |dirs, sandbox| {
+        sandbox.with_files(&[FileWithContent(src_name, "hello")]);
+
+        let src = dirs.test().join(src_name);
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            "open '{}'",
+            src.display(),
+        );
+
+        assert!(actual.err.is_empty());
+        assert!(actual.out.contains("hello"));
+
+        // also test for variables.
+        let actual = nu!(
+            cwd: dirs.test(),
+            "let f = '{}'; open $f",
+            src.display(),
+        );
+        assert!(actual.err.is_empty());
+        assert!(actual.out.contains("hello"));
+    });
+}
+
+#[cfg(not(windows))]
+#[rstest]
+#[case("a]?c")]
+#[case("a*.?c")]
+// windows doesn't allow filename with `*`.
+fn open_files_with_glob_metachars_nw(#[case] src_name: &str) {
+    open_files_with_glob_metachars(src_name);
+}
+
+#[test]
+fn open_files_inside_glob_metachars_dir() {
+    Playground::setup("open_files_inside_glob_metachars_dir", |dirs, sandbox| {
+        let sub_dir = "test[]";
+        sandbox
+            .within(sub_dir)
+            .with_files(&[FileWithContent("test_file.txt", "hello")]);
+
+        let actual = nu!(
+            cwd: dirs.test().join(sub_dir),
+            "open test_file.txt",
+        );
+
+        assert!(actual.err.is_empty());
+        assert!(actual.out.contains("hello"));
+    });
+}
+
+#[test]
+fn test_content_types_with_open_raw() {
+    Playground::setup("open_files_content_type_test", |dirs, _| {
+        let result = nu!(cwd: dirs.formats(), "open --raw random_numbers.csv | metadata");
+        assert!(result.out.contains("text/csv"));
+        let result = nu!(cwd: dirs.formats(), "open --raw caco3_plastics.tsv | metadata");
+        assert!(result.out.contains("text/tab-separated-values"));
+        let result = nu!(cwd: dirs.formats(), "open --raw sample-simple.json | metadata");
+        assert!(result.out.contains("application/json"));
+        let result = nu!(cwd: dirs.formats(), "open --raw sample.ini | metadata");
+        assert!(result.out.contains("text/plain"));
+        let result = nu!(cwd: dirs.formats(), "open --raw sample_data.xlsx | metadata");
+        assert!(result.out.contains("vnd.openxmlformats-officedocument"));
+        let result = nu!(cwd: dirs.formats(), "open --raw sample_def.nu | metadata");
+        assert!(result.out.contains("application/x-nuscript"));
+        let result = nu!(cwd: dirs.formats(), "open --raw sample.eml | metadata");
+        assert!(result.out.contains("message/rfc822"));
+        let result = nu!(cwd: dirs.formats(), "open --raw cargo_sample.toml | metadata");
+        assert!(result.out.contains("text/x-toml"));
+        let result = nu!(cwd: dirs.formats(), "open --raw appveyor.yml | metadata");
+        assert!(result.out.contains("application/yaml"));
+    })
+}
+
+#[test]
+fn test_metadata_without_raw() {
+    Playground::setup("open_files_content_type_test", |dirs, _| {
+        let result = nu!(cwd: dirs.formats(), "(open random_numbers.csv | metadata | get content_type?) == null");
+        assert_eq!(result.out, "true");
+        let result = nu!(cwd: dirs.formats(), "open random_numbers.csv | metadata | get source?");
+        assert!(result.out.contains("random_numbers.csv"));
+        let result = nu!(cwd: dirs.formats(), "(open caco3_plastics.tsv | metadata | get content_type?) == null");
+        assert_eq!(result.out, "true");
+        let result = nu!(cwd: dirs.formats(), "open caco3_plastics.tsv | metadata | get source?");
+        assert!(result.out.contains("caco3_plastics.tsv"));
+        let result = nu!(cwd: dirs.formats(), "(open sample-simple.json | metadata | get content_type?) == null");
+        assert_eq!(result.out, "true");
+        let result = nu!(cwd: dirs.formats(), "open sample-simple.json | metadata | get source?");
+        assert!(result.out.contains("sample-simple.json"));
+        // Only when not using nu_plugin_formats
+        let result = nu!(cwd: dirs.formats(), "open sample.ini | metadata");
+        assert!(result.out.contains("text/plain"));
+        let result = nu!(cwd: dirs.formats(), "open sample.ini | metadata | get source?");
+        assert!(result.out.contains("sample.ini"));
+        let result = nu!(cwd: dirs.formats(), "(open sample_data.xlsx | metadata | get content_type?) == null");
+        assert_eq!(result.out, "true");
+        let result = nu!(cwd: dirs.formats(), "open sample_data.xlsx | metadata | get source?");
+        assert!(result.out.contains("sample_data.xlsx"));
+        let result = nu!(cwd: dirs.formats(), "open sample_def.nu | metadata | get content_type?");
+        assert_eq!(result.out, "application/x-nuscript");
+        let result = nu!(cwd: dirs.formats(), "open sample_def.nu | metadata | get source?");
+        assert!(result.out.contains("sample_def"));
+        // Only when not using nu_plugin_formats
+        let result = nu!(cwd: dirs.formats(), "open sample.eml | metadata | get content_type?");
+        assert_eq!(result.out, "message/rfc822");
+        let result = nu!(cwd: dirs.formats(), "open sample.eml | metadata | get source?");
+        assert!(result.out.contains("sample.eml"));
+        let result = nu!(cwd: dirs.formats(), "(open cargo_sample.toml | metadata | get content_type?) == null");
+        assert_eq!(result.out, "true");
+        let result = nu!(cwd: dirs.formats(), "open cargo_sample.toml | metadata | get source?");
+        assert!(result.out.contains("cargo_sample.toml"));
+        let result =
+            nu!(cwd: dirs.formats(), "(open appveyor.yml | metadata | get content_type?) == null");
+        assert_eq!(result.out, "true");
+        let result = nu!(cwd: dirs.formats(), "open appveyor.yml | metadata | get source?");
+        assert!(result.out.contains("appveyor.yml"));
+    })
 }

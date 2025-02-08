@@ -1,7 +1,7 @@
 use nu_protocol::{
     ast::{
         Assignment, Bits, Block, Boolean, Comparison, Expr, Expression, Math, Operator, Pipeline,
-        PipelineElement,
+        Range,
     },
     engine::StateWorkingSet,
     ParseError, Type,
@@ -29,8 +29,6 @@ pub fn type_compatible(lhs: &Type, rhs: &Type) -> bool {
 
     match (lhs, rhs) {
         (Type::List(c), Type::List(d)) => type_compatible(c, d),
-        (Type::ListStream, Type::List(_)) => true,
-        (Type::List(_), Type::ListStream) => true,
         (Type::List(c), Type::Table(table_fields)) => {
             if matches!(**c, Type::Any) {
                 return true;
@@ -57,18 +55,18 @@ pub fn type_compatible(lhs: &Type, rhs: &Type) -> bool {
         (Type::Int, Type::Number) => true,
         (Type::Number, Type::Float) => true,
         (Type::Float, Type::Number) => true,
-        (Type::Closure, Type::Block) => true,
         (Type::Any, _) => true,
         (_, Type::Any) => true,
         (Type::Record(lhs), Type::Record(rhs)) | (Type::Table(lhs), Type::Table(rhs)) => {
             is_compatible(lhs, rhs)
         }
+        (Type::Glob, Type::String) => true,
         (lhs, rhs) => lhs == rhs,
     }
 }
 
 pub fn math_result_type(
-    _working_set: &StateWorkingSet,
+    working_set: &mut StateWorkingSet,
     lhs: &mut Expression,
     op: &mut Expression,
     rhs: &mut Expression,
@@ -87,11 +85,12 @@ pub fn math_result_type(
                 (Type::Float, Type::Number) => (Type::Number, None),
                 (Type::String, Type::String) => (Type::String, None),
                 (Type::Date, Type::Duration) => (Type::Date, None),
+                (Type::Duration, Type::Date) => (Type::Date, None),
                 (Type::Duration, Type::Duration) => (Type::Duration, None),
                 (Type::Filesize, Type::Filesize) => (Type::Filesize, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
@@ -104,7 +103,7 @@ pub fn math_result_type(
                     | Type::Filesize,
                     _,
                 ) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -118,7 +117,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -130,7 +129,7 @@ pub fn math_result_type(
                     )
                 }
             },
-            Operator::Math(Math::Append) => check_append(lhs, rhs, op),
+            Operator::Math(Math::Concat) => check_concat(working_set, lhs, rhs, op),
             Operator::Math(Math::Minus) => match (&lhs.ty, &rhs.ty) {
                 (Type::Int, Type::Int) => (Type::Int, None),
                 (Type::Float, Type::Int) => (Type::Float, None),
@@ -146,13 +145,13 @@ pub fn math_result_type(
                 (Type::Duration, Type::Duration) => (Type::Duration, None),
                 (Type::Filesize, Type::Filesize) => (Type::Filesize, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
                 (Type::Int | Type::Float | Type::Date | Type::Duration | Type::Filesize, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -166,7 +165,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -197,8 +196,8 @@ pub fn math_result_type(
                 (Type::Duration, Type::Float) => (Type::Duration, None),
                 (Type::Float, Type::Duration) => (Type::Duration, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
@@ -209,7 +208,7 @@ pub fn math_result_type(
                 | (Type::Duration, _)
                 | (Type::Filesize, _)
                 | (Type::List(_), _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -223,7 +222,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -246,13 +245,13 @@ pub fn math_result_type(
                 (Type::Number, Type::Float) => (Type::Number, None),
                 (Type::Float, Type::Number) => (Type::Number, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
                 (Type::Int | Type::Float, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -266,7 +265,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -278,17 +277,16 @@ pub fn math_result_type(
                     )
                 }
             },
-            Operator::Math(Math::Divide) | Operator::Math(Math::Modulo) => match (&lhs.ty, &rhs.ty)
-            {
-                (Type::Int, Type::Int) => (Type::Int, None),
+            Operator::Math(Math::Divide) => match (&lhs.ty, &rhs.ty) {
+                (Type::Int, Type::Int) => (Type::Float, None),
                 (Type::Float, Type::Int) => (Type::Float, None),
                 (Type::Int, Type::Float) => (Type::Float, None),
                 (Type::Float, Type::Float) => (Type::Float, None),
-                (Type::Number, Type::Number) => (Type::Number, None),
-                (Type::Number, Type::Int) => (Type::Number, None),
-                (Type::Int, Type::Number) => (Type::Number, None),
-                (Type::Number, Type::Float) => (Type::Number, None),
-                (Type::Float, Type::Number) => (Type::Number, None),
+                (Type::Number, Type::Number) => (Type::Float, None),
+                (Type::Number, Type::Int) => (Type::Float, None),
+                (Type::Int, Type::Number) => (Type::Float, None),
+                (Type::Number, Type::Float) => (Type::Float, None),
+                (Type::Float, Type::Number) => (Type::Float, None),
                 (Type::Filesize, Type::Filesize) => (Type::Float, None),
                 (Type::Filesize, Type::Int) => (Type::Filesize, None),
                 (Type::Filesize, Type::Float) => (Type::Filesize, None),
@@ -296,13 +294,13 @@ pub fn math_result_type(
                 (Type::Duration, Type::Int) => (Type::Duration, None),
                 (Type::Duration, Type::Float) => (Type::Duration, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
                 (Type::Int | Type::Float | Type::Filesize | Type::Duration, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -316,7 +314,56 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
+                    (
+                        Type::Any,
+                        Some(ParseError::UnsupportedOperationLHS(
+                            "division".into(),
+                            op.span,
+                            lhs.span,
+                            lhs.ty.clone(),
+                        )),
+                    )
+                }
+            },
+            Operator::Math(Math::Modulo) => match (&lhs.ty, &rhs.ty) {
+                (Type::Int, Type::Int) => (Type::Int, None),
+                (Type::Float, Type::Int) => (Type::Float, None),
+                (Type::Int, Type::Float) => (Type::Float, None),
+                (Type::Float, Type::Float) => (Type::Float, None),
+                (Type::Number, Type::Number) => (Type::Number, None),
+                (Type::Number, Type::Int) => (Type::Number, None),
+                (Type::Int, Type::Number) => (Type::Number, None),
+                (Type::Number, Type::Float) => (Type::Number, None),
+                (Type::Float, Type::Number) => (Type::Number, None),
+                (Type::Filesize, Type::Filesize) => (Type::Filesize, None),
+                (Type::Filesize, Type::Int) => (Type::Filesize, None),
+                (Type::Filesize, Type::Float) => (Type::Filesize, None),
+                (Type::Duration, Type::Duration) => (Type::Duration, None),
+                (Type::Duration, Type::Int) => (Type::Duration, None),
+                (Type::Duration, Type::Float) => (Type::Duration, None),
+
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
+
+                (Type::Any, _) => (Type::Any, None),
+                (_, Type::Any) => (Type::Any, None),
+                (Type::Int | Type::Float | Type::Filesize | Type::Duration, _) => {
+                    *op = Expression::garbage(working_set, op.span);
+                    (
+                        Type::Any,
+                        Some(ParseError::UnsupportedOperationRHS(
+                            "division".into(),
+                            op.span,
+                            lhs.span,
+                            lhs.ty.clone(),
+                            rhs.span,
+                            rhs.ty.clone(),
+                        )),
+                    )
+                }
+                _ => {
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -330,9 +377,9 @@ pub fn math_result_type(
             },
             Operator::Math(Math::FloorDivision) => match (&lhs.ty, &rhs.ty) {
                 (Type::Int, Type::Int) => (Type::Int, None),
-                (Type::Float, Type::Int) => (Type::Int, None),
-                (Type::Int, Type::Float) => (Type::Int, None),
-                (Type::Float, Type::Float) => (Type::Int, None),
+                (Type::Float, Type::Int) => (Type::Float, None),
+                (Type::Int, Type::Float) => (Type::Float, None),
+                (Type::Float, Type::Float) => (Type::Float, None),
                 (Type::Number, Type::Number) => (Type::Number, None),
                 (Type::Number, Type::Int) => (Type::Number, None),
                 (Type::Int, Type::Number) => (Type::Number, None),
@@ -348,7 +395,7 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
                 (Type::Int | Type::Float | Type::Filesize | Type::Duration, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -362,7 +409,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -380,10 +427,8 @@ pub fn math_result_type(
                 match (&lhs.ty, &rhs.ty) {
                     (Type::Bool, Type::Bool) => (Type::Bool, None),
 
-                    (Type::Custom(a), Type::Custom(b)) if a == b => {
-                        (Type::Custom(a.to_string()), None)
-                    }
-                    (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                    (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                    (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                     (Type::Any, _) => (Type::Any, None),
                     (_, Type::Any) => (Type::Any, None),
@@ -392,7 +437,7 @@ pub fn math_result_type(
                     // definitions. As soon as that syntax is added this should be removed
                     (a, b) if a == b => (Type::Bool, None),
                     (Type::Bool, _) => {
-                        *op = Expression::garbage(op.span);
+                        *op = Expression::garbage(working_set, op.span);
                         (
                             Type::Any,
                             Some(ParseError::UnsupportedOperationRHS(
@@ -406,7 +451,7 @@ pub fn math_result_type(
                         )
                     }
                     _ => {
-                        *op = Expression::garbage(op.span);
+                        *op = Expression::garbage(working_set, op.span);
                         (
                             Type::Any,
                             Some(ParseError::UnsupportedOperationLHS(
@@ -429,12 +474,14 @@ pub fn math_result_type(
                 (Type::Int, Type::Number) => (Type::Bool, None),
                 (Type::Number, Type::Float) => (Type::Bool, None),
                 (Type::Float, Type::Number) => (Type::Bool, None),
+                (Type::String, Type::String) => (Type::Bool, None),
                 (Type::Duration, Type::Duration) => (Type::Bool, None),
                 (Type::Date, Type::Date) => (Type::Bool, None),
                 (Type::Filesize, Type::Filesize) => (Type::Bool, None),
+                (Type::Bool, Type::Bool) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Nothing, _) => (Type::Nothing, None),
                 (_, Type::Nothing) => (Type::Nothing, None),
@@ -442,7 +489,7 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
                 (Type::Int | Type::Float | Type::Duration | Type::Filesize, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -456,7 +503,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -478,12 +525,14 @@ pub fn math_result_type(
                 (Type::Int, Type::Number) => (Type::Bool, None),
                 (Type::Number, Type::Float) => (Type::Bool, None),
                 (Type::Float, Type::Number) => (Type::Bool, None),
+                (Type::String, Type::String) => (Type::Bool, None),
                 (Type::Duration, Type::Duration) => (Type::Bool, None),
                 (Type::Date, Type::Date) => (Type::Bool, None),
                 (Type::Filesize, Type::Filesize) => (Type::Bool, None),
+                (Type::Bool, Type::Bool) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Nothing, _) => (Type::Nothing, None),
                 (_, Type::Nothing) => (Type::Nothing, None),
@@ -491,7 +540,7 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
                 (Type::Int | Type::Float | Type::Duration | Type::Filesize, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -505,7 +554,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -527,12 +576,14 @@ pub fn math_result_type(
                 (Type::Int, Type::Number) => (Type::Bool, None),
                 (Type::Number, Type::Float) => (Type::Bool, None),
                 (Type::Float, Type::Number) => (Type::Bool, None),
+                (Type::String, Type::String) => (Type::Bool, None),
                 (Type::Duration, Type::Duration) => (Type::Bool, None),
                 (Type::Date, Type::Date) => (Type::Bool, None),
                 (Type::Filesize, Type::Filesize) => (Type::Bool, None),
+                (Type::Bool, Type::Bool) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
@@ -540,7 +591,7 @@ pub fn math_result_type(
                 (Type::Nothing, _) => (Type::Nothing, None),
                 (_, Type::Nothing) => (Type::Nothing, None),
                 (Type::Int | Type::Float | Type::Duration | Type::Filesize, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -554,7 +605,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -576,12 +627,14 @@ pub fn math_result_type(
                 (Type::Int, Type::Number) => (Type::Bool, None),
                 (Type::Number, Type::Float) => (Type::Bool, None),
                 (Type::Float, Type::Number) => (Type::Bool, None),
+                (Type::String, Type::String) => (Type::Bool, None),
                 (Type::Duration, Type::Duration) => (Type::Bool, None),
                 (Type::Date, Type::Date) => (Type::Bool, None),
                 (Type::Filesize, Type::Filesize) => (Type::Bool, None),
+                (Type::Bool, Type::Bool) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
@@ -589,7 +642,7 @@ pub fn math_result_type(
                 (Type::Nothing, _) => (Type::Nothing, None),
                 (_, Type::Nothing) => (Type::Nothing, None),
                 (Type::Int | Type::Float | Type::Duration | Type::Filesize, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -603,7 +656,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -616,14 +669,14 @@ pub fn math_result_type(
                 }
             },
             Operator::Comparison(Comparison::Equal) => match (&lhs.ty, &rhs.ty) {
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 _ => (Type::Bool, None),
             },
             Operator::Comparison(Comparison::NotEqual) => match (&lhs.ty, &rhs.ty) {
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 _ => (Type::Bool, None),
             },
@@ -632,11 +685,11 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::String, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -650,7 +703,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -667,11 +720,11 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::String, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -685,7 +738,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -702,11 +755,11 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::String, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -720,7 +773,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -737,11 +790,11 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::String, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -755,7 +808,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -767,19 +820,19 @@ pub fn math_result_type(
                     )
                 }
             },
-            Operator::Comparison(Comparison::In) => match (&lhs.ty, &rhs.ty) {
+            Operator::Comparison(Comparison::In | Comparison::NotIn) => match (&lhs.ty, &rhs.ty) {
                 (t, Type::List(u)) if type_compatible(t, u) => (Type::Bool, None),
                 (Type::Int | Type::Float | Type::Number, Type::Range) => (Type::Bool, None),
                 (Type::String, Type::String) => (Type::Bool, None),
                 (Type::String, Type::Record(_)) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
                 (Type::Any, _) => (Type::Bool, None),
                 (_, Type::Any) => (Type::Bool, None),
                 (Type::Int | Type::Float | Type::String, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -793,7 +846,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -805,44 +858,48 @@ pub fn math_result_type(
                     )
                 }
             },
-            Operator::Comparison(Comparison::NotIn) => match (&lhs.ty, &rhs.ty) {
-                (t, Type::List(u)) if type_compatible(t, u) => (Type::Bool, None),
-                (Type::Int | Type::Float | Type::Number, Type::Range) => (Type::Bool, None),
-                (Type::String, Type::String) => (Type::Bool, None),
-                (Type::String, Type::Record(_)) => (Type::Bool, None),
+            Operator::Comparison(Comparison::Has | Comparison::NotHas) => {
+                let container = lhs;
+                let element = rhs;
+                match (&element.ty, &container.ty) {
+                    (t, Type::List(u)) if type_compatible(t, u) => (Type::Bool, None),
+                    (Type::Int | Type::Float | Type::Number, Type::Range) => (Type::Bool, None),
+                    (Type::String, Type::String) => (Type::Bool, None),
+                    (Type::String, Type::Record(_)) => (Type::Bool, None),
 
-                (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.to_string()), None),
-                (Type::Custom(a), _) => (Type::Custom(a.to_string()), None),
+                    (Type::Custom(a), Type::Custom(b)) if a == b => (Type::Custom(a.clone()), None),
+                    (Type::Custom(a), _) => (Type::Custom(a.clone()), None),
 
-                (Type::Any, _) => (Type::Bool, None),
-                (_, Type::Any) => (Type::Bool, None),
-                (Type::Int | Type::Float | Type::String, _) => {
-                    *op = Expression::garbage(op.span);
-                    (
-                        Type::Any,
-                        Some(ParseError::UnsupportedOperationRHS(
-                            "subset comparison".into(),
-                            op.span,
-                            lhs.span,
-                            lhs.ty.clone(),
-                            rhs.span,
-                            rhs.ty.clone(),
-                        )),
-                    )
+                    (Type::Any, _) => (Type::Bool, None),
+                    (_, Type::Any) => (Type::Bool, None),
+                    (Type::Int | Type::Float | Type::String, _) => {
+                        *op = Expression::garbage(working_set, op.span);
+                        (
+                            Type::Any,
+                            Some(ParseError::UnsupportedOperationLHS(
+                                "subset comparison".into(),
+                                op.span,
+                                element.span,
+                                element.ty.clone(),
+                            )),
+                        )
+                    }
+                    _ => {
+                        *op = Expression::garbage(working_set, op.span);
+                        (
+                            Type::Any,
+                            Some(ParseError::UnsupportedOperationRHS(
+                                "subset comparison".into(),
+                                op.span,
+                                element.span,
+                                element.ty.clone(),
+                                container.span,
+                                container.ty.clone(),
+                            )),
+                        )
+                    }
                 }
-                _ => {
-                    *op = Expression::garbage(op.span);
-                    (
-                        Type::Any,
-                        Some(ParseError::UnsupportedOperationLHS(
-                            "subset comparison".into(),
-                            op.span,
-                            lhs.span,
-                            lhs.ty.clone(),
-                        )),
-                    )
-                }
-            },
+            }
             Operator::Bits(Bits::ShiftLeft)
             | Operator::Bits(Bits::ShiftRight)
             | Operator::Bits(Bits::BitOr)
@@ -853,7 +910,7 @@ pub fn math_result_type(
                 (Type::Any, _) => (Type::Any, None),
                 (_, Type::Any) => (Type::Any, None),
                 (Type::Int, _) => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationRHS(
@@ -867,7 +924,7 @@ pub fn math_result_type(
                     )
                 }
                 _ => {
-                    *op = Expression::garbage(op.span);
+                    *op = Expression::garbage(working_set, op.span);
                     (
                         Type::Any,
                         Some(ParseError::UnsupportedOperationLHS(
@@ -879,7 +936,9 @@ pub fn math_result_type(
                     )
                 }
             },
-            Operator::Assignment(Assignment::AppendAssign) => check_append(lhs, rhs, op),
+            Operator::Assignment(Assignment::ConcatAssign) => {
+                check_concat(working_set, lhs, rhs, op)
+            }
             Operator::Assignment(_) => match (&lhs.ty, &rhs.ty) {
                 (x, y) if x == y => (Type::Nothing, None),
                 (Type::Any, _) => (Type::Nothing, None),
@@ -892,7 +951,7 @@ pub fn math_result_type(
             },
         },
         _ => {
-            *op = Expression::garbage(op.span);
+            *op = Expression::garbage(working_set, op.span);
 
             (
                 Type::Any,
@@ -912,62 +971,51 @@ pub fn check_pipeline_type(
     let mut output_errors: Option<Vec<ParseError>> = None;
 
     'elem: for elem in &pipeline.elements {
-        match elem {
-            PipelineElement::Expression(
-                _,
-                Expression {
-                    expr: Expr::Call(call),
-                    ..
-                },
-            ) => {
-                let decl = working_set.get_decl(call.decl_id);
+        if elem.redirection.is_some() {
+            current_type = Type::Any;
+        } else if let Expr::Call(call) = &elem.expr.expr {
+            let decl = working_set.get_decl(call.decl_id);
 
-                if current_type == Type::Any {
-                    let mut new_current_type = None;
-                    for (_, call_output) in decl.signature().input_output_types {
-                        if let Some(inner_current_type) = &new_current_type {
-                            if inner_current_type == &Type::Any {
-                                break;
-                            } else if inner_current_type != &call_output {
-                                // Union unequal types to Any for now
-                                new_current_type = Some(Type::Any)
-                            }
-                        } else {
-                            new_current_type = Some(call_output.clone())
+            if current_type == Type::Any {
+                let mut new_current_type = None;
+                for (_, call_output) in decl.signature().input_output_types {
+                    if let Some(inner_current_type) = &new_current_type {
+                        if inner_current_type == &Type::Any {
+                            break;
+                        } else if inner_current_type != &call_output {
+                            // Union unequal types to Any for now
+                            new_current_type = Some(Type::Any)
                         }
-                    }
-
-                    if let Some(new_current_type) = new_current_type {
-                        current_type = new_current_type
                     } else {
-                        current_type = Type::Any;
+                        new_current_type = Some(call_output.clone())
                     }
-                    continue 'elem;
+                }
+
+                if let Some(new_current_type) = new_current_type {
+                    current_type = new_current_type
                 } else {
-                    for (call_input, call_output) in decl.signature().input_output_types {
-                        if type_compatible(&call_input, &current_type) {
-                            current_type = call_output.clone();
-                            continue 'elem;
-                        }
+                    current_type = Type::Any;
+                }
+                continue 'elem;
+            } else {
+                for (call_input, call_output) in decl.signature().input_output_types {
+                    if type_compatible(&call_input, &current_type) {
+                        current_type = call_output.clone();
+                        continue 'elem;
                     }
                 }
+            }
 
-                if !decl.signature().input_output_types.is_empty() {
-                    if let Some(output_errors) = &mut output_errors {
-                        output_errors.push(ParseError::InputMismatch(current_type, call.head))
-                    } else {
-                        output_errors =
-                            Some(vec![ParseError::InputMismatch(current_type, call.head)]);
-                    }
+            if !decl.signature().input_output_types.is_empty() {
+                if let Some(output_errors) = &mut output_errors {
+                    output_errors.push(ParseError::InputMismatch(current_type, call.head))
+                } else {
+                    output_errors = Some(vec![ParseError::InputMismatch(current_type, call.head)]);
                 }
-                current_type = Type::Any;
             }
-            PipelineElement::Expression(_, Expression { ty, .. }) => {
-                current_type = ty.clone();
-            }
-            _ => {
-                current_type = Type::Any;
-            }
+            current_type = Type::Any;
+        } else {
+            current_type = elem.expr.ty.clone();
         }
     }
 
@@ -1010,10 +1058,15 @@ pub fn check_block_input_output(working_set: &StateWorkingSet, block: &Block) ->
                     .elements
                     .last()
                     .expect("internal error: we should have elements")
-                    .span()
+                    .expr
+                    .span
             };
 
-            output_errors.push(ParseError::OutputMismatch(output_type.clone(), span))
+            output_errors.push(ParseError::OutputMismatch(
+                output_type.clone(),
+                current_output_type.clone(),
+                span,
+            ))
         }
     }
 
@@ -1033,7 +1086,8 @@ pub fn check_block_input_output(working_set: &StateWorkingSet, block: &Block) ->
     output_errors
 }
 
-fn check_append(
+fn check_concat(
+    working_set: &mut StateWorkingSet,
     lhs: &Expression,
     rhs: &Expression,
     op: &mut Expression,
@@ -1046,23 +1100,17 @@ fn check_append(
                 (Type::List(Box::new(Type::Any)), None)
             }
         }
-        (Type::List(a), b) | (b, Type::List(a)) => {
-            if a == &Box::new(b.clone()) {
-                (Type::List(a.clone()), None)
-            } else {
-                (Type::List(Box::new(Type::Any)), None)
-            }
-        }
         (Type::Table(a), Type::Table(_)) => (Type::Table(a.clone()), None),
         (Type::String, Type::String) => (Type::String, None),
         (Type::Binary, Type::Binary) => (Type::Binary, None),
         (Type::Any, _) | (_, Type::Any) => (Type::Any, None),
-        (Type::Table(_) | Type::String | Type::Binary, _) => {
-            *op = Expression::garbage(op.span);
+        (Type::Table(_) | Type::List(_) | Type::String | Type::Binary, _)
+        | (_, Type::Table(_) | Type::List(_) | Type::String | Type::Binary) => {
+            *op = Expression::garbage(working_set, op.span);
             (
                 Type::Any,
                 Some(ParseError::UnsupportedOperationRHS(
-                    "append".into(),
+                    "concatenation".into(),
                     op.span,
                     lhs.span,
                     lhs.ty.clone(),
@@ -1072,16 +1120,76 @@ fn check_append(
             )
         }
         _ => {
-            *op = Expression::garbage(op.span);
+            *op = Expression::garbage(working_set, op.span);
             (
                 Type::Any,
                 Some(ParseError::UnsupportedOperationLHS(
-                    "append".into(),
+                    "concatenation".into(),
                     op.span,
                     lhs.span,
                     lhs.ty.clone(),
                 )),
             )
         }
+    }
+}
+
+/// If one of the parts of the range isn't a number, a parse error is added to the working set
+pub fn check_range_types(working_set: &mut StateWorkingSet, range: &mut Range) {
+    let next_op_span = if range.next.is_some() {
+        range.operator.next_op_span
+    } else {
+        range.operator.span
+    };
+    match (&mut range.from, &mut range.next, &mut range.to) {
+        (Some(expr), _, _) | (None, Some(expr), Some(_)) | (None, None, Some(expr))
+            if !type_compatible(&Type::Number, &expr.ty) =>
+        {
+            working_set.error(ParseError::UnsupportedOperationLHS(
+                String::from("range"),
+                next_op_span,
+                expr.span,
+                expr.ty.clone(),
+            ));
+            *expr = Expression::garbage(working_set, expr.span);
+        }
+        (Some(lhs), Some(rhs), _) if !type_compatible(&Type::Number, &rhs.ty) => {
+            working_set.error(ParseError::UnsupportedOperationRHS(
+                String::from("range"),
+                next_op_span,
+                lhs.span,
+                lhs.ty.clone(),
+                rhs.span,
+                rhs.ty.clone(),
+            ));
+            *rhs = Expression::garbage(working_set, rhs.span);
+        }
+        (Some(lhs), Some(rhs), _) | (Some(lhs), None, Some(rhs)) | (None, Some(lhs), Some(rhs))
+            if !type_compatible(&Type::Number, &rhs.ty) =>
+        {
+            working_set.error(ParseError::UnsupportedOperationRHS(
+                String::from("range"),
+                range.operator.span,
+                lhs.span,
+                lhs.ty.clone(),
+                rhs.span,
+                rhs.ty.clone(),
+            ));
+            *rhs = Expression::garbage(working_set, rhs.span);
+        }
+        (Some(from), Some(next), Some(to)) if !type_compatible(&Type::Number, &to.ty) => {
+            working_set.error(ParseError::UnsupportedOperationTernary(
+                String::from("range"),
+                range.operator.span,
+                from.span,
+                from.ty.clone(),
+                next.span,
+                next.ty.clone(),
+                to.span,
+                to.ty.clone(),
+            ));
+            *to = Expression::garbage(working_set, to.span);
+        }
+        _ => (),
     }
 }

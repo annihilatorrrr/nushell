@@ -1,12 +1,7 @@
-use indexmap::map::IndexMap;
+use indexmap::IndexMap;
 use nu_cmd_base::formats::to::delimited::merge_descriptors;
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Config, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Type,
-    Value,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::Config;
 
 #[derive(Clone)]
 pub struct ToMd;
@@ -32,7 +27,7 @@ impl Command for ToMd {
             .category(Category::Formats)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Convert table into simple Markdown."
     }
 
@@ -75,8 +70,8 @@ impl Command for ToMd {
         let head = call.head;
         let pretty = call.has_flag(engine_state, stack, "pretty")?;
         let per_element = call.has_flag(engine_state, stack, "per-element")?;
-        let config = engine_state.get_config();
-        to_md(input, pretty, per_element, config, head)
+        let config = stack.get_config(engine_state);
+        to_md(input, pretty, per_element, &config, head)
     }
 }
 
@@ -87,6 +82,12 @@ fn to_md(
     config: &Config,
     head: Span,
 ) -> Result<PipelineData, ShellError> {
+    // text/markdown became a valid mimetype with rfc7763
+    let metadata = input
+        .metadata()
+        .unwrap_or_default()
+        .with_content_type(Some("text/markdown".into()));
+
     let (grouped_input, single_list) = group_by(input, head, config);
     if per_element || single_list {
         return Ok(Value::string(
@@ -100,9 +101,10 @@ fn to_md(
                 .join(""),
             head,
         )
-        .into_pipeline_data());
+        .into_pipeline_data_with_metadata(Some(metadata)));
     }
-    Ok(Value::string(table(grouped_input, pretty, config), head).into_pipeline_data())
+    Ok(Value::string(table(grouped_input, pretty, config), head)
+        .into_pipeline_data_with_metadata(Some(metadata)))
 }
 
 fn fragment(input: Value, pretty: bool, config: &Config) -> String {
@@ -120,12 +122,12 @@ fn fragment(input: Value, pretty: bool, config: &Config) -> String {
                 };
 
                 out.push_str(&markup);
-                out.push_str(&data.into_string("|", config));
+                out.push_str(&data.to_expanded_string("|", config));
             }
             _ => out = table(input.into_pipeline_data(), pretty, config),
         }
     } else {
-        out = input.into_string("|", config)
+        out = input.to_expanded_string("|", config)
     }
 
     out.push('\n');
@@ -138,7 +140,7 @@ fn collect_headers(headers: &[String]) -> (Vec<String>, Vec<usize>) {
 
     if !headers.is_empty() && (headers.len() > 1 || !headers[0].is_empty()) {
         for header in headers {
-            let escaped_header_string = htmlescape::encode_minimal(header);
+            let escaped_header_string = v_htmlescape::escape(header).to_string();
             column_widths.push(escaped_header_string.len());
             escaped_headers.push(escaped_header_string);
         }
@@ -151,7 +153,21 @@ fn collect_headers(headers: &[String]) -> (Vec<String>, Vec<usize>) {
 
 fn table(input: PipelineData, pretty: bool, config: &Config) -> String {
     let vec_of_values = input.into_iter().collect::<Vec<Value>>();
-    let headers = merge_descriptors(&vec_of_values);
+    let mut headers = merge_descriptors(&vec_of_values);
+
+    let mut empty_header_index = 0;
+    for value in &vec_of_values {
+        if let Value::Record { val, .. } = value {
+            for column in val.columns() {
+                if column.is_empty() && !headers.contains(&String::new()) {
+                    headers.insert(empty_header_index, String::new());
+                    empty_header_index += 1;
+                    break;
+                }
+                empty_header_index += 1;
+            }
+        }
+    }
 
     let (escaped_headers, mut column_widths) = collect_headers(&headers);
 
@@ -168,7 +184,7 @@ fn table(input: PipelineData, pretty: bool, config: &Config) -> String {
                         .get(&headers[i])
                         .cloned()
                         .unwrap_or_else(|| Value::nothing(span))
-                        .into_string(", ", config);
+                        .to_expanded_string(", ", config);
                     let new_column_width = value_string.len();
 
                     escaped_row.push(value_string);
@@ -179,7 +195,8 @@ fn table(input: PipelineData, pretty: bool, config: &Config) -> String {
                 }
             }
             p => {
-                let value_string = htmlescape::encode_minimal(&p.into_abbreviated_string(config));
+                let value_string =
+                    v_htmlescape::escape(&p.to_abbreviated_string(config)).to_string();
                 escaped_row.push(value_string);
             }
         }
@@ -214,7 +231,7 @@ pub fn group_by(values: PipelineData, head: Span, config: &Config) -> (PipelineD
                 .or_insert_with(|| vec![val.clone()]);
         } else {
             lists
-                .entry(val.into_string(",", config))
+                .entry(val.to_expanded_string(",", config))
                 .and_modify(|v: &mut Vec<Value>| v.push(val.clone()))
                 .or_insert_with(|| vec![val.clone()]);
         }
@@ -318,7 +335,10 @@ fn get_padded_string(text: String, desired_length: usize, padding_character: cha
 
 #[cfg(test)]
 mod tests {
+    use crate::{Get, Metadata};
+
     use super::*;
+    use nu_cmd_lang::eval_pipeline_without_terminal_expression;
     use nu_protocol::{record, Config, IntoPipelineData, Value};
 
     fn one(string: &str) -> String {
@@ -413,6 +433,66 @@ mod tests {
             | New Zealand |
             | USA         |
         "#)
+        );
+    }
+
+    #[test]
+    fn test_empty_column_header() {
+        let value = Value::test_list(vec![
+            Value::test_record(record! {
+                "" => Value::test_string("1"),
+                "foo" => Value::test_string("2"),
+            }),
+            Value::test_record(record! {
+                "" => Value::test_string("3"),
+                "foo" => Value::test_string("4"),
+            }),
+        ]);
+
+        assert_eq!(
+            table(
+                value.clone().into_pipeline_data(),
+                false,
+                &Config::default()
+            ),
+            one(r#"
+            ||foo|
+            |-|-|
+            |1|2|
+            |3|4|
+        "#)
+        );
+    }
+
+    #[test]
+    fn test_content_type_metadata() {
+        let mut engine_state = Box::new(EngineState::new());
+        let state_delta = {
+            // Base functions that are needed for testing
+            // Try to keep this working set small to keep tests running as fast as possible
+            let mut working_set = StateWorkingSet::new(&engine_state);
+
+            working_set.add_decl(Box::new(ToMd {}));
+            working_set.add_decl(Box::new(Metadata {}));
+            working_set.add_decl(Box::new(Get {}));
+
+            working_set.render()
+        };
+        let delta = state_delta;
+
+        engine_state
+            .merge_delta(delta)
+            .expect("Error merging delta");
+
+        let cmd = "{a: 1 b: 2} | to md  | metadata | get content_type";
+        let result = eval_pipeline_without_terminal_expression(
+            cmd,
+            std::env::temp_dir().as_ref(),
+            &mut engine_state,
+        );
+        assert_eq!(
+            Value::test_record(record!("content_type" => Value::test_string("text/markdown"))),
+            result.expect("There should be a result")
         );
     }
 }

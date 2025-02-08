@@ -5,7 +5,7 @@ use nu_test_support::{nu, pipeline};
 #[test]
 fn to_column() {
     Playground::setup("split_column_test_1", |dirs, sandbox| {
-        sandbox.with_files(vec![
+        sandbox.with_files(&[
             FileWithContentToBeTrimmed(
                 "sample.txt",
                 r#"
@@ -32,6 +32,19 @@ fn to_column() {
         ));
 
         assert!(actual.out.contains("shipper"));
+
+        let actual = nu!(
+            cwd: dirs.test(), pipeline(
+            r#"
+                open sample.txt
+                | lines
+                | str trim
+                | split column -n 3 ","
+                | get column3
+            "#
+        ));
+
+        assert!(actual.out.contains("tariff_item,name,origin"));
 
         let actual = nu!(
             cwd: dirs.test(), pipeline(

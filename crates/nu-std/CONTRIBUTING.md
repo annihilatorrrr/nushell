@@ -13,7 +13,7 @@ You'll generally find the team members on
 [Discord `#standard-library` channel][discord#standard-library] and can have
 preliminary discussions there to clarify the issues involved.
 
-You can open a [Github issue][new-issue] to have a more focused discussion of
+You can open a [GitHub issue][new-issue] to have a more focused discussion of
 your idea.
 
 Generally, we think the standard library should contain items that are relevant
@@ -204,7 +204,7 @@ More design guidelines:
 ### Useful Commands
 - Run all unit tests for the standard library:
   ```nushell
-  cargo run -- -c 'use std testing; testing run-tests --path crates/nu-std'
+  cargo run -- -c 'use crates/nu-std/testing.nu; testing run-tests --path crates/nu-std'
   ```
   > **Note**  
   > this uses the debug version of NU interpreter from the same repo, which is
@@ -216,7 +216,7 @@ More design guidelines:
 - Run all tests for a specific test module, e.g,
   `crates/nu-std/tests/test_foo.nu`
   ```nushell
-  cargo run -- -c 'use std testing; testing run-tests --path crates/nu-std --module test_foo'
+  cargo run -- -c 'use crates/nu-std/testing.nu; testing run-tests --path crates/nu-std --module test_foo'
   ```
 - Run a custom command with additional logging (assuming you have instrumented
   the command with `log <level>`, as we recommend.)

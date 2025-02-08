@@ -1,9 +1,4 @@
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    record, Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Type,
-    Value,
-};
+use nu_engine::command_prelude::*;
 use reedline::{
     get_reedline_edit_commands, get_reedline_keybinding_modifiers, get_reedline_keycodes,
     get_reedline_prompt_edit_modes, get_reedline_reedline_events,
@@ -19,7 +14,7 @@ impl Command for KeybindingsList {
 
     fn signature(&self) -> Signature {
         Signature::build(self.name())
-            .input_output_types(vec![(Type::Nothing, Type::Table(vec![]))])
+            .input_output_types(vec![(Type::Nothing, Type::table())])
             .switch("modifiers", "list of modifiers", Some('m'))
             .switch("keycodes", "list of keycodes", Some('k'))
             .switch("modes", "list of edit modes", Some('o'))
@@ -28,7 +23,7 @@ impl Command for KeybindingsList {
             .category(Category::Platform)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "List available options that can be used to create keybindings."
     }
 
@@ -54,22 +49,26 @@ impl Command for KeybindingsList {
 
     fn run(
         &self,
-        _engine_state: &EngineState,
-        _stack: &mut Stack,
+        engine_state: &EngineState,
+        stack: &mut Stack,
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let records = if call.named_len() == 0 {
-            let all_options = ["modifiers", "keycodes", "edits", "modes", "events"];
-            all_options
-                .iter()
-                .flat_map(|argument| get_records(argument, call.head))
-                .collect()
-        } else {
-            call.named_iter()
-                .flat_map(|(argument, _, _)| get_records(argument.item.as_str(), call.head))
-                .collect()
-        };
+        let all_options = ["modifiers", "keycodes", "edits", "modes", "events"];
+
+        let presence = all_options
+            .iter()
+            .map(|option| call.has_flag(engine_state, stack, option))
+            .collect::<Result<Vec<_>, ShellError>>()?;
+
+        let no_option_specified = presence.iter().all(|present| !*present);
+
+        let records = all_options
+            .iter()
+            .zip(presence)
+            .filter(|(_, present)| no_option_specified || *present)
+            .flat_map(|(option, _)| get_records(option, call.head))
+            .collect();
 
         Ok(Value::list(records, call.head).into_pipeline_data())
     }

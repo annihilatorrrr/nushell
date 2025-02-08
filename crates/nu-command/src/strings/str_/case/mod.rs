@@ -8,12 +8,8 @@ pub use downcase::SubCommand as StrDowncase;
 pub use str_::Str;
 pub use upcase::SubCommand as StrUpcase;
 
-use nu_engine::CallExt;
-
 use nu_cmd_base::input_handler::{operate as general_operate, CmdArgument};
-use nu_protocol::ast::{Call, CellPath};
-use nu_protocol::engine::{EngineState, Stack};
-use nu_protocol::{PipelineData, ShellError, Span, Value};
+use nu_engine::command_prelude::*;
 
 struct Arguments<F: Fn(&str) -> String + Send + Sync + 'static> {
     case_operation: &'static F,
@@ -42,7 +38,7 @@ where
         case_operation,
         cell_paths,
     };
-    general_operate(action, args, input, call.head, engine_state.ctrlc.clone())
+    general_operate(action, args, input, call.head, engine_state.signals())
 }
 
 fn action<F>(input: &Value, args: &Arguments<F>, head: Span) -> Value

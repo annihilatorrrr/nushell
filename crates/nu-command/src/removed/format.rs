@@ -1,6 +1,4 @@
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, PipelineData, ShellError, Signature, SyntaxShape, Type};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -26,7 +24,7 @@ impl Command for SubCommand {
             .category(Category::Removed)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Removed command: use `format date` instead."
     }
 

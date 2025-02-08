@@ -1,11 +1,5 @@
-use nu_engine::CallExt;
-use nu_protocol::{
-    ast::Call,
-    engine::{Command, EngineState, Stack},
-    Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, SyntaxShape,
-    Type, Value,
-};
-use regex::Regex;
+use fancy_regex::Regex;
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -27,28 +21,18 @@ impl Command for SubCommand {
                 "The value that denotes what separates the list.",
             )
             .switch(
-                "regex", 
-                "separator is a regular expression, matching values that can be coerced into a string", 
+                "regex",
+                "separator is a regular expression, matching values that can be coerced into a string",
                 Some('r'))
             .category(Category::Filters)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Split a list into multiple lists using a separator."
     }
 
     fn search_terms(&self) -> Vec<&str> {
         vec!["separate", "divide", "regex"]
-    }
-
-    fn run(
-        &self,
-        engine_state: &EngineState,
-        stack: &mut Stack,
-        call: &Call,
-        input: PipelineData,
-    ) -> Result<PipelineData, ShellError> {
-        split_list(engine_state, stack, call, input)
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -150,6 +134,33 @@ impl Command for SubCommand {
             },
         ]
     }
+
+    fn is_const(&self) -> bool {
+        true
+    }
+
+    fn run(
+        &self,
+        engine_state: &EngineState,
+        stack: &mut Stack,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let has_regex = call.has_flag(engine_state, stack, "regex")?;
+        let separator: Value = call.req(engine_state, stack, 0)?;
+        split_list(engine_state, call, input, has_regex, separator)
+    }
+
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let has_regex = call.has_flag_const(working_set, "regex")?;
+        let separator: Value = call.req_const(working_set, 0)?;
+        split_list(working_set.permanent(), call, input, has_regex, separator)
+    }
 }
 
 enum Matcher {
@@ -160,7 +171,7 @@ enum Matcher {
 impl Matcher {
     pub fn new(regex: bool, lhs: Value) -> Result<Self, ShellError> {
         if regex {
-            Ok(Matcher::Regex(Regex::new(&lhs.as_string()?).map_err(
+            Ok(Matcher::Regex(Regex::new(&lhs.coerce_str()?).map_err(
                 |e| ShellError::GenericError {
                     error: "Error with regular expression".into(),
                     msg: e.to_string(),
@@ -180,8 +191,8 @@ impl Matcher {
     pub fn compare(&self, rhs: &Value) -> Result<bool, ShellError> {
         Ok(match self {
             Matcher::Regex(regex) => {
-                if let Ok(rhs_str) = rhs.as_string() {
-                    regex.is_match(&rhs_str)
+                if let Ok(rhs_str) = rhs.coerce_str() {
+                    regex.is_match(&rhs_str).unwrap_or(false)
                 } else {
                     false
                 }
@@ -193,17 +204,18 @@ impl Matcher {
 
 fn split_list(
     engine_state: &EngineState,
-    stack: &mut Stack,
     call: &Call,
     input: PipelineData,
+    has_regex: bool,
+    separator: Value,
 ) -> Result<PipelineData, ShellError> {
-    let separator: Value = call.req(engine_state, stack, 0)?;
     let mut temp_list = Vec::new();
     let mut returned_list = Vec::new();
 
-    let iter = input.into_interruptible_iter(engine_state.ctrlc.clone());
-    let matcher = Matcher::new(call.has_flag(engine_state, stack, "regex")?, separator)?;
-    for val in iter {
+    let matcher = Matcher::new(has_regex, separator)?;
+    for val in input {
+        engine_state.signals().check(call.head)?;
+
         if matcher.compare(&val)? {
             if !temp_list.is_empty() {
                 returned_list.push(Value::list(temp_list.clone(), call.head));

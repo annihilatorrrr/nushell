@@ -1,10 +1,4 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, ListStream, PipelineData, ShellError, Signature, Span, SyntaxShape, Type,
-    Value,
-};
+use nu_engine::command_prelude::*;
 
 #[derive(Clone)]
 pub struct Echo;
@@ -14,7 +8,7 @@ impl Command for Echo {
         "echo"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Returns its arguments, ignoring the piped-in value."
     }
 
@@ -25,9 +19,11 @@ impl Command for Echo {
             .category(Category::Core)
     }
 
-    fn extra_usage(&self) -> &str {
-        r#"When given no arguments, it returns an empty string. When given one argument,
-it returns it. Otherwise, it returns a list of the arguments. There is usually
+    fn extra_description(&self) -> &str {
+        r#"Unlike `print`, which prints unstructured text to stdout, `echo` is like an
+identity function and simply returns its arguments. When given no arguments,
+it returns an empty string. When given one argument, it returns it as a
+nushell value. Otherwise, it returns a list of the arguments. There is usually
 little reason to use this over just writing the values as-is."#
     }
 
@@ -38,8 +34,22 @@ little reason to use this over just writing the values as-is."#
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let args = call.rest(engine_state, stack, 0);
-        run(engine_state, args, stack, call)
+        let args = call.rest(engine_state, stack, 0)?;
+        echo_impl(args, call.head)
+    }
+
+    fn run_const(
+        &self,
+        working_set: &StateWorkingSet,
+        call: &Call,
+        _input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        let args = call.rest_const(working_set, 0)?;
+        echo_impl(args, call.head)
+    }
+
+    fn is_const(&self) -> bool {
+        true
     }
 
     fn examples(&self) -> Vec<Example> {
@@ -62,41 +72,13 @@ little reason to use this over just writing the values as-is."#
     }
 }
 
-fn run(
-    engine_state: &EngineState,
-    args: Result<Vec<Value>, ShellError>,
-    stack: &mut Stack,
-    call: &Call,
-) -> Result<PipelineData, ShellError> {
-    let result = args.map(|to_be_echoed| {
-        let n = to_be_echoed.len();
-        match n.cmp(&1usize) {
-            //  More than one value is converted in a stream of values
-            std::cmp::Ordering::Greater => PipelineData::ListStream(
-                ListStream::from_stream(to_be_echoed.into_iter(), engine_state.ctrlc.clone()),
-                None,
-            ),
-
-            //  But a single value can be forwarded as it is
-            std::cmp::Ordering::Equal => PipelineData::Value(to_be_echoed[0].clone(), None),
-
-            //  When there are no elements, we echo the empty string
-            std::cmp::Ordering::Less => PipelineData::Value(Value::string("", call.head), None),
-        }
-    });
-
-    // If echo is not redirected, then print to the screen (to behave in a similar way to other shells)
-    if !call.redirect_stdout {
-        match result {
-            Ok(pipeline) => {
-                pipeline.print(engine_state, stack, false, false)?;
-                Ok(PipelineData::Empty)
-            }
-            Err(err) => Err(err),
-        }
-    } else {
-        result
-    }
+fn echo_impl(mut args: Vec<Value>, head: Span) -> Result<PipelineData, ShellError> {
+    let value = match args.len() {
+        0 => Value::string("", head),
+        1 => args.pop().expect("one element"),
+        _ => Value::list(args, head),
+    };
+    Ok(value.into_pipeline_data())
 }
 
 #[cfg(test)]

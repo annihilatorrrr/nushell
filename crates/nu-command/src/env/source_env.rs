@@ -1,13 +1,9 @@
-use std::path::PathBuf;
-
 use nu_engine::{
-    eval_block_with_early_return, find_in_dirs_env, get_dirs_var_from_call, redirect_env, CallExt,
+    command_prelude::*, find_in_dirs_env, get_dirs_var_from_call, get_eval_block_with_early_return,
+    redirect_env,
 };
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, PipelineData, ShellError, Signature, Spanned, SyntaxShape, Type, Value,
-};
+use nu_protocol::{engine::CommandType, shell_error::io::IoError, BlockId};
+use std::path::PathBuf;
 
 /// Source a file for environment variables.
 #[derive(Clone)]
@@ -23,14 +19,23 @@ impl Command for SourceEnv {
             .input_output_types(vec![(Type::Any, Type::Any)])
             .required(
                 "filename",
-                SyntaxShape::String, // type is string to avoid automatically canonicalizing the path
-                "The filepath to the script file to source the environment from.",
+                SyntaxShape::OneOf(vec![SyntaxShape::String, SyntaxShape::Nothing]), // type is string to avoid automatically canonicalizing the path
+                "The filepath to the script file to source the environment from (`null` for no-op).",
             )
             .category(Category::Core)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Source the environment from a source file into the current environment."
+    }
+
+    fn extra_description(&self) -> &str {
+        r#"This command is a parser keyword. For details, check:
+  https://www.nushell.sh/book/thinking_in_nu.html"#
+    }
+
+    fn command_type(&self) -> CommandType {
+        CommandType::Keyword
     }
 
     fn run(
@@ -40,24 +45,31 @@ impl Command for SourceEnv {
         call: &Call,
         input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
+        if call.get_parser_info(caller_stack, "noop").is_some() {
+            return Ok(PipelineData::empty());
+        }
+
         let source_filename: Spanned<String> = call.req(engine_state, caller_stack, 0)?;
 
         // Note: this hidden positional is the block_id that corresponded to the 0th position
         // it is put here by the parser
         let block_id: i64 = call.req_parser_info(engine_state, caller_stack, "block_id")?;
+        let block_id = BlockId::new(block_id as usize);
 
         // Set the currently evaluated directory (file-relative PWD)
         let file_path = if let Some(path) = find_in_dirs_env(
             &source_filename.item,
             engine_state,
             caller_stack,
-            get_dirs_var_from_call(call),
+            get_dirs_var_from_call(caller_stack, call),
         )? {
             PathBuf::from(&path)
         } else {
-            return Err(ShellError::FileNotFound {
-                span: source_filename.span,
-            });
+            return Err(ShellError::Io(IoError::new(
+                std::io::ErrorKind::NotFound,
+                source_filename.span,
+                PathBuf::from(source_filename.item),
+            )));
         };
 
         if let Some(parent) = file_path.parent() {
@@ -72,17 +84,14 @@ impl Command for SourceEnv {
         );
 
         // Evaluate the block
-        let block = engine_state.get_block(block_id as usize).clone();
-        let mut callee_stack = caller_stack.gather_captures(engine_state, &block.captures);
+        let block = engine_state.get_block(block_id).clone();
+        let mut callee_stack = caller_stack
+            .gather_captures(engine_state, &block.captures)
+            .reset_pipes();
 
-        let result = eval_block_with_early_return(
-            engine_state,
-            &mut callee_stack,
-            &block,
-            input,
-            call.redirect_stdout,
-            call.redirect_stderr,
-        );
+        let eval_block_with_early_return = get_eval_block_with_early_return(engine_state);
+
+        let result = eval_block_with_early_return(engine_state, &mut callee_stack, &block, input);
 
         // Merge the block's environment to the current stack
         redirect_env(engine_state, caller_stack, &callee_stack);
@@ -95,10 +104,17 @@ impl Command for SourceEnv {
     }
 
     fn examples(&self) -> Vec<Example> {
-        vec![Example {
-            description: "Sources the environment from foo.nu in the current context",
-            example: r#"source-env foo.nu"#,
-            result: None,
-        }]
+        vec![
+            Example {
+                description: "Sources the environment from foo.nu in the current context",
+                example: r#"source-env foo.nu"#,
+                result: None,
+            },
+            Example {
+                description: "Sourcing `null` is a no-op.",
+                example: r#"source-env null"#,
+                result: None,
+            },
+        ]
     }
 }

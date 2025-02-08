@@ -1,12 +1,7 @@
-use crate::grapheme_flags;
-use crate::grapheme_flags_const;
+use crate::{grapheme_flags, grapheme_flags_const};
 use nu_cmd_base::input_handler::{operate, CmdArgument};
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::ast::CellPath;
-use nu_protocol::engine::{Command, EngineState, Stack, StateWorkingSet};
-use nu_protocol::Category;
-use nu_protocol::{Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value};
+use nu_engine::command_prelude::*;
+
 use unicode_segmentation::UnicodeSegmentation;
 
 struct Arguments {
@@ -33,8 +28,8 @@ impl Command for SubCommand {
             .input_output_types(vec![
                 (Type::String, Type::Int),
                 (Type::List(Box::new(Type::String)), Type::List(Box::new(Type::Int))),
-                (Type::Table(vec![]), Type::Table(vec![])),
-                (Type::Record(vec![]), Type::Record(vec![])),
+                (Type::table(), Type::table()),
+                (Type::record(), Type::record()),
             ])
             .allow_variants_without_examples(true)
             .switch(
@@ -55,7 +50,7 @@ impl Command for SubCommand {
             .category(Category::Strings)
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Output the length of any strings in the pipeline."
     }
 
@@ -135,7 +130,7 @@ fn run(
         cell_paths: (!cell_paths.is_empty()).then_some(cell_paths),
         graphemes,
     };
-    operate(action, args, input, call.head, engine_state.ctrlc.clone())
+    operate(action, args, input, call.head, engine_state.signals())
 }
 
 fn action(input: &Value, arg: &Arguments, head: Span) -> Value {

@@ -3,9 +3,9 @@ use crossterm::{
     terminal::{Clear as ClearCommand, ClearType},
     QueueableCommand,
 };
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{Category, Example, PipelineData, ShellError, Signature, Type};
+use nu_engine::command_prelude::*;
+use nu_protocol::shell_error::io::IoError;
+
 use std::io::Write;
 
 #[derive(Clone)]
@@ -16,36 +16,71 @@ impl Command for Clear {
         "clear"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Clear the terminal."
+    }
+
+    fn extra_description(&self) -> &str {
+        "By default clears the current screen and the off-screen scrollback buffer."
     }
 
     fn signature(&self) -> Signature {
         Signature::build("clear")
             .category(Category::Platform)
             .input_output_types(vec![(Type::Nothing, Type::Nothing)])
+            .switch(
+                "keep-scrollback",
+                "Do not clear the scrollback history",
+                Some('k'),
+            )
     }
 
     fn run(
         &self,
-        _engine_state: &EngineState,
-        _stack: &mut Stack,
-        _call: &Call,
+        engine_state: &EngineState,
+        stack: &mut Stack,
+        call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        std::io::stdout()
-            .queue(ClearCommand(ClearType::All))?
-            .queue(MoveTo(0, 0))?
-            .flush()?;
+        let from_io_error = IoError::factory(call.head, None);
+        match call.has_flag(engine_state, stack, "keep-scrollback")? {
+            true => {
+                std::io::stdout()
+                    .queue(MoveTo(0, 0))
+                    .map_err(&from_io_error)?
+                    .queue(ClearCommand(ClearType::All))
+                    .map_err(&from_io_error)?
+                    .flush()
+                    .map_err(&from_io_error)?;
+            }
+            _ => {
+                std::io::stdout()
+                    .queue(MoveTo(0, 0))
+                    .map_err(&from_io_error)?
+                    .queue(ClearCommand(ClearType::All))
+                    .map_err(&from_io_error)?
+                    .queue(ClearCommand(ClearType::Purge))
+                    .map_err(&from_io_error)?
+                    .flush()
+                    .map_err(&from_io_error)?;
+            }
+        };
 
         Ok(PipelineData::Empty)
     }
 
     fn examples(&self) -> Vec<Example> {
-        vec![Example {
-            description: "Clear the terminal",
-            example: "clear",
-            result: None,
-        }]
+        vec![
+            Example {
+                description: "Clear the terminal",
+                example: "clear",
+                result: None,
+            },
+            Example {
+                description: "Clear the terminal but not its scrollback history",
+                example: "clear --keep-scrollback",
+                result: None,
+            },
+        ]
     }
 }

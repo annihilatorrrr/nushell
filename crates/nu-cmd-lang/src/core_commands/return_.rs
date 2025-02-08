@@ -1,9 +1,5 @@
-use nu_engine::CallExt;
-use nu_protocol::ast::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
-use nu_protocol::{
-    Category, Example, PipelineData, ShellError, Signature, SyntaxShape, Type, Value,
-};
+use nu_engine::command_prelude::*;
+use nu_protocol::engine::CommandType;
 
 #[derive(Clone)]
 pub struct Return;
@@ -13,7 +9,7 @@ impl Command for Return {
         "return"
     }
 
-    fn usage(&self) -> &str {
+    fn description(&self) -> &str {
         "Return early from a function."
     }
 
@@ -28,13 +24,13 @@ impl Command for Return {
             .category(Category::Core)
     }
 
-    fn extra_usage(&self) -> &str {
+    fn extra_description(&self) -> &str {
         r#"This command is a parser keyword. For details, check:
   https://www.nushell.sh/book/thinking_in_nu.html"#
     }
 
-    fn is_parser_keyword(&self) -> bool {
-        true
+    fn command_type(&self) -> CommandType {
+        CommandType::Keyword
     }
 
     fn run(
@@ -45,17 +41,11 @@ impl Command for Return {
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let return_value: Option<Value> = call.opt(engine_state, stack, 0)?;
-        if let Some(value) = return_value {
-            Err(ShellError::Return {
-                span: call.head,
-                value: Box::new(value),
-            })
-        } else {
-            Err(ShellError::Return {
-                span: call.head,
-                value: Box::new(Value::nothing(call.head)),
-            })
-        }
+        let value = return_value.unwrap_or(Value::nothing(call.head));
+        Err(ShellError::Return {
+            span: call.head,
+            value: Box::new(value),
+        })
     }
 
     fn examples(&self) -> Vec<Example> {
